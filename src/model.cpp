@@ -82,6 +82,9 @@ void MelBandRoformer::LoadWeights(const std::string& path) {
 
     kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.mask_estimator_depth");
     if (kv_idx >= 0) mask_estimator_depth_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
+
+    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.sample_rate");
+    if (kv_idx >= 0) sample_rate_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
     
     // Inference defaults (optional, fallback to hardcoded values)
     kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.default_chunk_size");

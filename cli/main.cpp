@@ -43,19 +43,29 @@ int main(int argc, char* argv[]) {
     for (int i = 4; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--chunk-size" && i + 1 < argc) {
-            chunk_size = std::atoi(argv[++i]);
-            if (chunk_size <= 0) {
-                std::cerr << "Error: chunk-size must be a positive integer" << std::endl;
+            try {
+                chunk_size = std::stoi(argv[++i]);
+                if (chunk_size <= 0) {
+                     std::cerr << "Error: chunk-size must be a positive integer" << std::endl;
+                     return 1;
+                }
+                chunk_size_set = true;
+            } catch (...) {
+                std::cerr << "Error: invalid chunk-size" << std::endl;
                 return 1;
             }
-            chunk_size_set = true;
         } else if (arg == "--overlap" && i + 1 < argc) {
-            num_overlap = std::atoi(argv[++i]);
-            if (num_overlap < 1) {
-                std::cerr << "Error: overlap must be at least 1" << std::endl;
+            try {
+                num_overlap = std::stoi(argv[++i]);
+                if (num_overlap < 1) {
+                    std::cerr << "Error: overlap must be at least 1" << std::endl;
+                    return 1;
+                }
+                num_overlap_set = true;
+             } catch (...) {
+                std::cerr << "Error: invalid overlap" << std::endl;
                 return 1;
             }
-            num_overlap_set = true;
         } else {
             std::cerr << "Unknown option: " << arg << std::endl;
             print_usage(argv[0]);
@@ -85,8 +95,12 @@ int main(int argc, char* argv[]) {
                   << input_audio.sampleRate << " Hz" << std::endl;
 
         // 1. Check Sample Rate
-        if (input_audio.sampleRate != 44100) {
-            throw std::runtime_error("Input audio sample rate must be 44100 Hz. Current: " + std::to_string(input_audio.sampleRate));
+        int required_sr = engine.GetSampleRate();
+        std::cout << "Model expects sample rate: " << required_sr << " Hz" << std::endl;
+
+        if (input_audio.sampleRate != required_sr) {
+            throw std::runtime_error("Input audio sample rate must be " + std::to_string(required_sr) + 
+                                     " Hz. Current: " + std::to_string(input_audio.sampleRate));
         }
 
         // 2. Check Channels & Auto-Expand Mono
@@ -99,6 +113,7 @@ int main(int argc, char* argv[]) {
              }
              input_audio.data = std::move(stereo_data);
              input_audio.channels = 2;
+             input_audio.samples *= 2;
         } else if (input_audio.channels != 2) {
              // We can either reject or try to process first 2 channels? 
              // Ideally reject to be safer, or warn.
@@ -150,9 +165,9 @@ int main(int argc, char* argv[]) {
 
             // Prepare AudioBuffer
             AudioBuffer output_audio_buf;
-            output_audio_buf.data = output_stems[i]; // Copy? AudioBuffer uses vector, simple move/copy
+            output_audio_buf.data = std::move(output_stems[i]); // Move to avoid copy
             output_audio_buf.channels = 2; // Output is always stereo
-            output_audio_buf.sampleRate = 44100;
+            output_audio_buf.sampleRate = required_sr;
             output_audio_buf.samples = output_stems[i].size();
             
             std::cout << "Saving output stem " << i << ": " << current_output_path << std::endl;

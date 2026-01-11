@@ -50,7 +50,8 @@ public:
     int GetNumStems() const { return num_stems_; }
     bool GetSkipConnection() const { return skip_connection_; }
     bool GetSTFTNormalized() const { return stft_normalized_; }
-    bool GetZeroDC() const { return zero_dc_; }
+    int GetZeroDC() const { return zero_dc_; }
+    int GetSampleRate() const { return sample_rate_; }
     
     // Inference defaults (from GGUF, can be overridden at runtime)
     int GetDefaultChunkSize() const { return default_chunk_size_; }
@@ -142,7 +143,8 @@ private:
     bool stft_normalized_ = false;
     bool zero_dc_ = false;
     int mask_estimator_depth_ = 1;
-    
+    int sample_rate_ = 44100;
+
     // Inference defaults
     int default_chunk_size_ = 352800;
     int default_num_overlap_ = 2;

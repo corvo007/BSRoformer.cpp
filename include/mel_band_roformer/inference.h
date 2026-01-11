@@ -30,6 +30,7 @@ public:
     // Get model's recommended inference defaults
     int GetDefaultChunkSize() const;
     int GetDefaultNumOverlap() const;
+    int GetSampleRate() const;
 
     // Static helper for Overlap-Add logic (matches Python exactly)
     // model_func: input [samples], output [stems][samples] (interleaved stereo)

@@ -46,6 +46,10 @@ int Inference::GetDefaultNumOverlap() const {
     return model_->GetDefaultNumOverlap();
 }
 
+int Inference::GetSampleRate() const {
+    return model_->GetSampleRate();
+}
+
 Inference::~Inference() {
     if (allocr_) ggml_gallocr_free(allocr_);
     if (ctx_) ggml_free(ctx_);
