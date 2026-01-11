@@ -350,7 +350,7 @@ jobs:
       - name: Install Ninja
         run: choco install ninja -y
         
-      - name: Configure
+      - name: Configure and Build
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
@@ -360,9 +360,7 @@ jobs:
             -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" ^
             -DMBR_BUILD_TESTS=OFF ^
             -DMBR_BUILD_CLI=ON
-            
-      - name: Build
-        run: cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
+          cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
         
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
