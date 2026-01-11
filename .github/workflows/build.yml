@@ -355,7 +355,7 @@ jobs:
         run: |
           # For CI, use the official CUDA installer approach
           curl.exe -o cuda_installer.exe -L "https://developer.download.nvidia.com/compute/cuda/12.4.0/network_installers/cuda_12.4.0_windows_network.exe"
-          Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s nvcc_12.4 cudart_12.4 cublas_12.4 cufft_12.4" -Wait -NoNewWindow
+          Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s nvcc_12.4 cudart_12.4 cublas_12.4 cublas_dev_12.4 cufft_12.4 cufft_dev_12.4" -Wait -NoNewWindow
           Add-Content $env:GITHUB_ENV "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
           Add-Content $env:GITHUB_PATH "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"
         
