@@ -65,19 +65,7 @@ jobs:
           
       - name: Generate Test Audio
         run: |
-          python -c "
-          import numpy as np
-          import scipy.io.wavfile as wav
-          sr = 44100
-          duration = 5.0
-          t = np.linspace(0, duration, int(sr * duration))
-          # Create a more complex test signal
-          left = (np.sin(2 * np.pi * 440 * t) + 0.5 * np.sin(2 * np.pi * 880 * t)) * 0.3
-          right = (np.sin(2 * np.pi * 660 * t) + 0.5 * np.sin(2 * np.pi * 1320 * t)) * 0.3
-          stereo = np.stack([left, right], axis=1).astype(np.float32)
-          wav.write('test_audio.wav', sr, stereo)
-          print(f'Generated test audio: {len(t)} samples, {duration}s')
-          "
+          python scripts/generate_test_audio.py --output test_audio.wav --duration 5.0 --sample-rate 44100
           
       - name: Generate Test Data
         run: |

@@ -62,14 +62,17 @@ def generate_test_audio(
         + 0.10 * np.sin(2 * np.pi * 82.41 * t)  # E2 sub-bass
     )
 
+    # Add Gaussian noise to prevent zero-signal bands (crucial for RMSNorm stability)
+    noise = np.random.normal(0, 0.001, t.shape).astype(np.float32)
+
     # Add slight amplitude envelope to make it more interesting
     envelope = np.ones_like(t)
     fade_samples = int(0.1 * sample_rate)  # 100ms fade
     envelope[:fade_samples] = np.linspace(0, 1, fade_samples)
     envelope[-fade_samples:] = np.linspace(1, 0, fade_samples)
 
-    # Mix vocals and accompaniment
-    mix = (vocals + accompaniment) * envelope
+    # Mix vocals, accompaniment, and noise
+    mix = (vocals + accompaniment) * envelope + noise
 
     # Normalize to prevent clipping
     max_val = np.max(np.abs(mix))
