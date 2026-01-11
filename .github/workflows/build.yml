@@ -47,11 +47,7 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          # Filter out wxPython and PyAudio from requirements
-          sed -i '/wxPython/d' msst/requirements.txt
-          sed -i '/PyAudio/d' msst/requirements.txt
-          pip install -r msst/requirements.txt
-          pip install huggingface_hub scipy soundfile gguf librosa ml_collections einops pyyaml
+          pip install huggingface_hub scipy soundfile gguf librosa ml_collections einops pyyaml numpy tqdm beartype rotary_embedding_torch
           
       - name: Download Model from HuggingFace
         env:
