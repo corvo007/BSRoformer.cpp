@@ -399,16 +399,24 @@ jobs:
           $cuda_url = "https://developer.download.nvidia.com/compute/cuda/${cuda_ver}/network_installers/cuda_${cuda_ver}_windows_network.exe"
           
           echo "Downloading CUDA $cuda_ver from $cuda_url"
-          curl.exe -o cuda_installer.exe -L "$cuda_url"
+          # Use -f to fail on 404 errors
+          curl.exe -f -o cuda_installer.exe -L "$cuda_url"
+          if ($LASTEXITCODE -ne 0) { throw "Download failed for CUDA $cuda_ver" }
           
-          # Install arguments might vary slightly but usually these persistent args work for network installers
-          # Note: 11.8 and newer usually support these silent flags
+          echo "Installing CUDA..."
           Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s nvcc_${cuda_ver} cudart_${cuda_ver} cublas_${cuda_ver} cublas_dev_${cuda_ver} cufft_${cuda_ver} cufft_dev_${cuda_ver}" -Wait -NoNewWindow
           
           # Path handling for major.minor
           $cuda_ver_short = $cuda_ver.Substring(0, $cuda_ver.LastIndexOf('.'))
-          Add-Content $env:GITHUB_ENV "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${cuda_ver_short}"
-          Add-Content $env:GITHUB_PATH "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${cuda_ver_short}\bin"
+          $cuda_path = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${cuda_ver_short}"
+          
+          echo "Verifying installation at $cuda_path"
+          if (!(Test-Path "$cuda_path")) { 
+              throw "CUDA installation directory not found: $cuda_path" 
+          }
+          
+          Add-Content $env:GITHUB_ENV "CUDA_PATH=${cuda_path}"
+          Add-Content $env:GITHUB_PATH "${cuda_path}\bin"
         
       - name: Install Ninja
         run: choco install ninja -y
@@ -417,9 +425,17 @@ jobs:
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          
+          echo Debug: CUDA_PATH is %CUDA_PATH%
+          if not exist "%CUDA_PATH%" (
+             echo ERROR: CUDA_PATH does not exist!
+             exit 1
+          )
+          
           cmake -B build -G "Ninja Multi-Config" ^
             -DGGML_DIR=ggml ^
             -DGGML_CUDA=ON ^
+            -DCUDAToolkit_ROOT="%CUDA_PATH%" ^
             -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" ^
             -DMBR_BUILD_TESTS=OFF ^
             -DMBR_BUILD_CLI=ON
