@@ -40,7 +40,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
           
       - name: Clone MSST Repository
         run: git clone --depth 1 ${{ env.MSST_REPO }} msst
@@ -132,8 +131,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      
+      - name: Clone GGML
+        run: git clone --depth 1 https://github.com/ggerganov/ggml.git ggml
       
       - name: Download Test Data
         uses: actions/download-artifact@v4
@@ -185,6 +185,7 @@ jobs:
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_DIR=${{ github.workspace }}/ggml \
             -DGGML_CUDA=OFF \
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} \
             -DMBR_BUILD_TESTS=ON \
@@ -194,6 +195,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cmake -B build -G "Ninja Multi-Config" `
+            -DGGML_DIR=${{ github.workspace }}/ggml `
             -DGGML_CUDA=OFF `
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} `
             -DMBR_BUILD_TESTS=ON `
@@ -295,20 +297,26 @@ jobs:
     container: nvidia/cuda:12.6.2-devel-ubuntu24.04
     
     steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+          
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      
+      - name: Clone GGML
+        run: git clone --depth 1 https://github.com/ggerganov/ggml.git ggml
       
       - name: Install Dependencies
         run: |
-          apt-get update
-          apt-get install -y cmake build-essential ninja-build git
+          apt-get install -y cmake build-essential ninja-build
           
       - name: Configure
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_DIR=${{ github.workspace }}/ggml \
             -DGGML_CUDA=ON \
             -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" \
             -DMBR_BUILD_TESTS=OFF \
@@ -339,25 +347,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      
+      - name: Clone GGML
+        run: git clone --depth 1 https://github.com/ggerganov/ggml.git ggml
       
       - name: Install CUDA Toolkit
         run: |
-          # Download and install CUDA toolkit components
-          mkdir -p "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ env.CUDA_VERSION }}"
-          choco install unzip -y
-          $components = @(
-            "cuda_cudart-windows-x86_64-12.4.127-archive",
-            "cuda_nvcc-windows-x86_64-12.4.131-archive",
-            "cuda_nvrtc-windows-x86_64-12.4.127-archive",
-            "libcublas-windows-x86_64-12.4.5.8-archive",
-            "cuda_cccl-windows-x86_64-12.4.127-archive"
-          )
-          foreach ($comp in $components) {
-            $url = "https://developer.download.nvidia.com/compute/cuda/redist/$($comp.Split('-')[0])/$($comp.Replace('cuda_', '').Split('-')[0])/windows-x86_64/$comp.zip"
-            # Simplified: just use the base URL pattern
-          }
           # For CI, use the official CUDA installer approach
           curl.exe -o cuda_installer.exe -L "https://developer.download.nvidia.com/compute/cuda/12.4.0/network_installers/cuda_12.4.0_windows_network.exe"
           Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s nvcc_12.4 cudart_12.4 cublas_12.4 cufft_12.4" -Wait -NoNewWindow
@@ -372,6 +367,7 @@ jobs:
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -B build -G "Ninja Multi-Config" ^
+            -DGGML_DIR=%GITHUB_WORKSPACE%/ggml ^
             -DGGML_CUDA=ON ^
             -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" ^
             -DMBR_BUILD_TESTS=OFF ^
