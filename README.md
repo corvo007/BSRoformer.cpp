@@ -63,7 +63,7 @@ Options:
 
 ### Prerequisites
 
-- CMake >= 3.16
+- CMake >= 3.17
 - C++17 compatible compiler (MSVC 2019+, GCC 9+, Clang 10+)
 - GGML source code (submodule or local directory)
 

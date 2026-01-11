@@ -63,7 +63,7 @@ Mel-Band-Roformer 音频源分离模型的高性能 C++ 推理实现。
 
 ### 前置条件
 
-- CMake >= 3.16
+- CMake >= 3.17
 - C++17 兼容编译器（MSVC 2019+, GCC 9+, Clang 10+）
 - GGML 源码（submodule 或本地目录）
 

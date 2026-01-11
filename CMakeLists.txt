@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.17)
 project(mel_band_roformer_cpp VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -82,6 +82,14 @@ target_include_directories(mel_band_roformer PRIVATE
 target_link_libraries(mel_band_roformer PUBLIC ggml)
 if(GGML_CUDA AND TARGET ggml-cuda)
     target_link_libraries(mel_band_roformer PUBLIC ggml-cuda)
+    
+    # Fix for CI: Link against CUDA stubs if the driver is not present
+    # This prevents errors like "libcuda.so.1 needed by ... not found" during linking
+    find_package(CUDAToolkit REQUIRED)
+    if(TARGET CUDA::cuda_driver)
+        target_link_libraries(mel_band_roformer PUBLIC CUDA::cuda_driver)
+        message(STATUS "Linked against CUDA driver stubs")
+    endif()
 endif()
 
 # Compiler options
