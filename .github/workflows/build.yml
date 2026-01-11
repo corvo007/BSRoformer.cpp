@@ -236,13 +236,32 @@ jobs:
           CLI_DIR=$(dirname "$CLI_PATH")
           CLI_EXE="./$CLI_NAME"
           
+          # Debug Info
+          echo "Debug: Listing directory $CLI_DIR"
+          ls -l "$CLI_DIR"
+          
+          echo "Debug: Checking dependencies"
+          if command -v ldd >/dev/null; then
+             ldd "$CLI_PATH" || echo "ldd returned error"
+          fi
+          
+          # Define runner helper
+          run_cli() {
+              if [[ "$RUNNER_OS" == "Windows" ]]; then
+                  WIN_EXE=$(cygpath -w "$CLI_PATH")
+                  cmd //c "$WIN_EXE" "$@"
+              else
+                  (cd "$CLI_DIR" && ./$CLI_NAME "$@")
+              fi
+          }
+
           # 1. Test --help
           echo "[1/4] Testing --help..."
-          (cd "$CLI_DIR" && $CLI_EXE --help)
+          run_cli --help
           
           # 2. Test with missing arguments (should fail)
           echo "[2/4] Testing error handling..."
-          if (cd "$CLI_DIR" && $CLI_EXE 2>/dev/null); then
+          if run_cli 2>/dev/null; then
             echo "ERROR: CLI should fail without arguments"
             exit 1
           fi
@@ -265,7 +284,8 @@ jobs:
               ABS_OUTPUT=$(cygpath -w "$ABS_OUTPUT")
           fi
           
-          (cd "$CLI_DIR" && $CLI_EXE "$ABS_MODEL" "$ABS_INPUT" "$ABS_OUTPUT" --chunk-size 88200 --overlap 2)
+          echo "Running with model: $ABS_MODEL"
+          run_cli "$ABS_MODEL" "$ABS_INPUT" "$ABS_OUTPUT" --chunk-size 88200 --overlap 2
           
           # Verify output exists and has reasonable size
           if [[ ! -f cli_test_output.wav ]]; then
