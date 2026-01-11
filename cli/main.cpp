@@ -168,7 +168,7 @@ int main(int argc, char* argv[]) {
             output_audio_buf.data = std::move(output_stems[i]); // Move to avoid copy
             output_audio_buf.channels = 2; // Output is always stereo
             output_audio_buf.sampleRate = required_sr;
-            output_audio_buf.samples = output_stems[i].size();
+            output_audio_buf.samples = output_audio_buf.data.size();
             
             std::cout << "Saving output stem " << i << ": " << current_output_path << std::endl;
             AudioFile::Save(current_output_path, output_audio_buf);
