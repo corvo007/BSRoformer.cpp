@@ -216,30 +216,33 @@ jobs:
         run: |
           echo "=== CLI Test Suite ==="
           
-          # Determine CLI path based on OS
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            CLI="./build/Release/mel_band_roformer-cli.exe"
-          else
-            CLI="./build/mel_band_roformer-cli"
+          # Dynamically find CLI executable
+          CLI_NAME="mel_band_roformer-cli"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then CLI_NAME="mel_band_roformer-cli.exe"; fi
+          
+          echo "Searching for $CLI_NAME..."
+          CLI_PATH=$(find build -name "$CLI_NAME" | head -n 1)
+          
+          if [[ -z "$CLI_PATH" ]]; then
+            echo "Error: CLI executable not found!"
+            find build
+            exit 1
           fi
           
-          if [[ ! -f "$CLI" ]]; then
-            echo "CLI not found at $CLI"
-            echo "Searching build directory..."
-            find build -name "mel_band_roformer-cli*"
-            # Try alternate path for Windows
-            if [[ "$RUNNER_OS" == "Windows" ]]; then
-               CLI="./build/Release/mel_band_roformer-cli.exe"
-            fi
-          fi
+          echo "Found CLI at: $CLI_PATH"
+          chmod +x "$CLI_PATH"
+          
+          # Setup execution variables
+          CLI_DIR=$(dirname "$CLI_PATH")
+          CLI_EXE="./$CLI_NAME"
           
           # 1. Test --help
           echo "[1/4] Testing --help..."
-          $CLI --help
+          (cd "$CLI_DIR" && $CLI_EXE --help)
           
           # 2. Test with missing arguments (should fail)
           echo "[2/4] Testing error handling..."
-          if $CLI 2>/dev/null; then
+          if (cd "$CLI_DIR" && $CLI_EXE 2>/dev/null); then
             echo "ERROR: CLI should fail without arguments"
             exit 1
           fi
@@ -250,7 +253,19 @@ jobs:
           
           # 4. Run full inference
           echo "[4/4] Running inference..."
-          $CLI "$MBR_MODEL_PATH" cli_test_input.wav cli_test_output.wav --chunk-size 88200 --overlap 2
+          # Use absolute paths for input/output to avoid directory issues
+          ABS_MODEL=$(readlink -f "$MBR_MODEL_PATH" || echo "$(pwd)/model.gguf")
+          ABS_INPUT=$(readlink -f cli_test_input.wav || echo "$(pwd)/cli_test_input.wav")
+          ABS_OUTPUT=$(readlink -f cli_test_output.wav || echo "$(pwd)/cli_test_output.wav")
+          
+          # Convert paths for Windows MSVC executables
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+              ABS_MODEL=$(cygpath -w "$ABS_MODEL")
+              ABS_INPUT=$(cygpath -w "$ABS_INPUT")
+              ABS_OUTPUT=$(cygpath -w "$ABS_OUTPUT")
+          fi
+          
+          (cd "$CLI_DIR" && $CLI_EXE "$ABS_MODEL" "$ABS_INPUT" "$ABS_OUTPUT" --chunk-size 88200 --overlap 2)
           
           # Verify output exists and has reasonable size
           if [[ ! -f cli_test_output.wav ]]; then
