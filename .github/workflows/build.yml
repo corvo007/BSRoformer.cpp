@@ -132,6 +132,10 @@ jobs:
         with:
           python-version: '3.11'
           
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install Python Dependencies
         run: pip install numpy scipy
           
@@ -247,14 +251,13 @@ jobs:
           
           # Define runner helper
           run_cli() {
-              if [[ "$RUNNER_OS" == "Windows" ]]; then
-                  WIN_EXE=$(cygpath -w "$CLI_PATH")
-                  cmd //c "$WIN_EXE" "$@"
-              else
-                  (cd "$CLI_DIR" && ./$CLI_NAME "$@")
-              fi
+              echo "Executing: ./$CLI_NAME $@"
+              (cd "$CLI_DIR" && ./$CLI_NAME "$@")
           }
-
+          
+          # Debug PATH
+          echo "PATH: $PATH"
+          
           # 1. Test --help
           echo "[1/4] Testing --help..."
           run_cli --help
