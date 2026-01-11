@@ -94,7 +94,7 @@ jobs:
             --ckpt model/${{ env.HF_CHECKPOINT_PATH }} \
             --config model/${{ env.HF_CONFIG_PATH }} \
             --out model.gguf \
-            --dtype fp16
+            --dtype fp32
             
       - name: Upload Test Data Artifact
         uses: actions/upload-artifact@v4
