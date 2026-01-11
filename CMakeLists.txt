@@ -110,7 +110,7 @@ function(mbr_copy_ggml_dlls target_name)
         return()
     endif()
     
-    set(GGML_DLL_TARGETS ggml ggml-base ggml-cpu ggml-cuda)
+    set(GGML_DLL_TARGETS ggml ggml-base ggml-cpu ggml-cuda ggml-vulkan)
     
     foreach(dll_target ${GGML_DLL_TARGETS})
         if(TARGET ${dll_target})
