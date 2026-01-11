@@ -1,0 +1,206 @@
+name: Convert Model to GGUF
+
+on:
+  workflow_dispatch:
+    inputs:
+      hf_repo:
+        description: 'HuggingFace 仓库名称 (例如: GaboxR67/MelBandRoformers)'
+        required: true
+        type: string
+      checkpoint_path:
+        description: '权重文件路径 (相对于仓库, 例如: melbandroformers/vocals/voc_fv6.ckpt)'
+        required: true
+        type: string
+      config_path:
+        description: '配置文件路径 (相对于仓库, 例如: melbandroformers/vocals/voc_gabox.yaml)'
+        required: true
+        type: string
+      model_name:
+        description: '输出模型名称 (用于文件命名, 例如: voc_fv6)'
+        required: false
+        type: string
+        default: 'model'
+      quantization_types:
+        description: '要转换的量化类型 (用逗号分隔, 留空则转换全部)'
+        required: false
+        type: string
+        default: 'fp32,fp16,q8_0,q4_0,q4_1,q5_0,q5_1'
+
+env:
+  SUPPORTED_QUANT_TYPES: 'fp32,fp16,q8_0,q4_0,q4_1,q5_0,q5_1'
+
+jobs:
+  convert-to-all-quant-types:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          
+      - name: Install Dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install huggingface_hub gguf librosa einops pyyaml numpy
+          
+      - name: Download Model from HuggingFace
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "
+          from huggingface_hub import hf_hub_download
+          import os
+          
+          token = os.environ.get('HF_TOKEN') or None
+          repo = '${{ inputs.hf_repo }}'
+          
+          print(f'Downloading from {repo}...')
+          
+          # Download checkpoint
+          ckpt_path = hf_hub_download(
+              repo, 
+              '${{ inputs.checkpoint_path }}', 
+              local_dir='./model', 
+              token=token
+          )
+          print(f'  Checkpoint: {ckpt_path}')
+          
+          # Download config
+          config_path = hf_hub_download(
+              repo, 
+              '${{ inputs.config_path }}',
+              local_dir='./model', 
+              token=token
+          )
+          print(f'  Config: {config_path}')
+          "
+          
+      - name: Show Model Info
+        run: |
+          echo "=== Model Configuration ==="
+          cat model/${{ inputs.config_path }}
+          echo ""
+          echo "=== Checkpoint File Size ==="
+          ls -lh model/${{ inputs.checkpoint_path }}
+          
+      - name: Create Output Directory
+        run: mkdir -p output
+        
+      - name: Convert to All Quantization Types
+        run: |
+          #!/bin/bash
+          set -e
+          
+          CHECKPOINT="model/${{ inputs.checkpoint_path }}"
+          CONFIG="model/${{ inputs.config_path }}"
+          MODEL_NAME="${{ inputs.model_name }}"
+          QUANT_TYPES="${{ inputs.quantization_types }}"
+          
+          # If no types specified, use all supported types
+          if [ -z "$QUANT_TYPES" ]; then
+            QUANT_TYPES="${{ env.SUPPORTED_QUANT_TYPES }}"
+          fi
+          
+          echo "=== Converting Model: $MODEL_NAME ==="
+          echo "Checkpoint: $CHECKPOINT"
+          echo "Config: $CONFIG"
+          echo "Quantization Types: $QUANT_TYPES"
+          echo ""
+          
+          # Convert comma-separated to array
+          IFS=',' read -ra TYPES <<< "$QUANT_TYPES"
+          
+          for qtype in "${TYPES[@]}"; do
+            # Trim whitespace
+            qtype=$(echo "$qtype" | xargs)
+            
+            # Generate output filename following GGUF naming convention
+            # Format: {model_name}-{quantization}.gguf
+            OUTPUT_FILE="output/${MODEL_NAME}-${qtype^^}.gguf"
+            
+            echo ">>> Converting to $qtype -> $OUTPUT_FILE"
+            
+            python scripts/convert_to_gguf.py \
+              --ckpt "$CHECKPOINT" \
+              --config "$CONFIG" \
+              --out "$OUTPUT_FILE" \
+              --dtype "$qtype"
+              
+            # Show file size
+            SIZE=$(ls -lh "$OUTPUT_FILE" | awk '{print $5}')
+            echo "    Output size: $SIZE"
+            echo ""
+          done
+          
+          echo "=== Conversion Complete ==="
+          ls -lh output/
+          
+      - name: Generate Summary Report
+        run: |
+          python -c "
+          import os
+          import json
+          
+          output_dir = 'output'
+          model_name = '${{ inputs.model_name }}'
+          
+          report = {
+              'model_name': model_name,
+              'hf_repo': '${{ inputs.hf_repo }}',
+              'checkpoint': '${{ inputs.checkpoint_path }}',
+              'config': '${{ inputs.config_path }}',
+              'files': []
+          }
+          
+          total_size = 0
+          for f in sorted(os.listdir(output_dir)):
+              if f.endswith('.gguf'):
+                  path = os.path.join(output_dir, f)
+                  size_bytes = os.path.getsize(path)
+                  total_size += size_bytes
+                  
+                  # Extract quant type from filename
+                  quant_type = f.replace(f'{model_name}-', '').replace('.gguf', '')
+                  
+                  report['files'].append({
+                      'filename': f,
+                      'quant_type': quant_type,
+                      'size_bytes': size_bytes,
+                      'size_mb': round(size_bytes / 1024 / 1024, 2)
+                  })
+          
+          report['total_size_bytes'] = total_size
+          report['total_size_mb'] = round(total_size / 1024 / 1024, 2)
+          
+          # Write JSON report
+          with open('output/conversion_report.json', 'w') as f:
+              json.dump(report, f, indent=2)
+          
+          # Print markdown table for GitHub Actions summary
+          print('## Conversion Report')
+          print('')
+          print(f'**Model**: {model_name}')
+          print(f'**Source**: [{report[\"hf_repo\"]}](https://huggingface.co/{report[\"hf_repo\"]})')
+          print('')
+          print('| Quantization | Filename | Size |')
+          print('|--------------|----------|------|')
+          for f in report['files']:
+              print(f'| {f[\"quant_type\"]} | {f[\"filename\"]} | {f[\"size_mb\"]} MB |')
+          print('')
+          print(f'**Total Size**: {report[\"total_size_mb\"]} MB')
+          " | tee -a $GITHUB_STEP_SUMMARY
+          
+      - name: Upload Converted Models
+        uses: actions/upload-artifact@v4
+        with:
+          name: gguf-models-${{ inputs.model_name }}
+          path: |
+            output/*.gguf
+            output/conversion_report.json
+          retention-days: 30
+          compression-level: 0  # GGUF is already compressed for quantized types

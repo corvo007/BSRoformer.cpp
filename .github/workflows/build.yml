@@ -1,0 +1,391 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - '**/*.cpp'
+      - '**/*.h'
+      - '**/*.hpp'
+      - '**/CMakeLists.txt'
+      - '.github/workflows/**'
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # HuggingFace model info
+  HF_MODEL_REPO: GaboxR67/MelBandRoformers
+  HF_CHECKPOINT_PATH: melbandroformers/vocals/voc_fv6.ckpt
+  HF_CONFIG_PATH: melbandroformers/vocals/voc_gabox.yaml
+  # Music-Source-Separation-Training repo
+  MSST_REPO: https://github.com/ZFTurbo/Music-Source-Separation-Training.git
+
+jobs:
+  # ===========================================================================
+  # Prepare: Generate test data (runs once, shared via artifacts)
+  # ===========================================================================
+  prepare-test-data:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          
+      - name: Clone MSST Repository
+        run: git clone --depth 1 ${{ env.MSST_REPO }} msst
+        
+      - name: Install Dependencies
+        run: |
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install -r msst/requirements.txt
+          pip install huggingface_hub scipy soundfile gguf librosa ml_collections einops pyyaml
+          
+      - name: Download Model from HuggingFace
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "
+          from huggingface_hub import hf_hub_download
+          import os
+          token = os.environ.get('HF_TOKEN') or None
+          hf_hub_download('${{ env.HF_MODEL_REPO }}', '${{ env.HF_CHECKPOINT_PATH }}', 
+                          local_dir='./model', token=token)
+          hf_hub_download('${{ env.HF_MODEL_REPO }}', '${{ env.HF_CONFIG_PATH }}',
+                          local_dir='./model', token=token)
+          "
+          
+      - name: Generate Test Audio
+        run: |
+          python -c "
+          import numpy as np
+          import scipy.io.wavfile as wav
+          sr = 44100
+          duration = 5.0
+          t = np.linspace(0, duration, int(sr * duration))
+          # Create a more complex test signal
+          left = (np.sin(2 * np.pi * 440 * t) + 0.5 * np.sin(2 * np.pi * 880 * t)) * 0.3
+          right = (np.sin(2 * np.pi * 660 * t) + 0.5 * np.sin(2 * np.pi * 1320 * t)) * 0.3
+          stereo = np.stack([left, right], axis=1).astype(np.float32)
+          wav.write('test_audio.wav', sr, stereo)
+          print(f'Generated test audio: {len(t)} samples, {duration}s')
+          "
+          
+      - name: Generate Test Data
+        run: |
+          python scripts/generate_test_data.py \
+            --model-repo msst \
+            --audio test_audio.wav \
+            --checkpoint model/${{ env.HF_CHECKPOINT_PATH }} \
+            --config model/${{ env.HF_CONFIG_PATH }} \
+            --output test_data
+            
+      - name: Convert Model to GGUF
+        run: |
+          python scripts/convert_to_gguf.py \
+            --ckpt model/${{ env.HF_CHECKPOINT_PATH }} \
+            --config model/${{ env.HF_CONFIG_PATH }} \
+            --out model.gguf \
+            --dtype fp16
+            
+      - name: Upload Test Data Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-data
+          path: |
+            test_data/
+            model.gguf
+            test_audio.wav
+          retention-days: 1
+
+  # ===========================================================================
+  # Build Matrix: Core Platforms + Vulkan
+  # ===========================================================================
+  build:
+    needs: prepare-test-data
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Tier 1: Core Platforms (CPU)
+          - { name: linux-x64-cpu,    os: ubuntu-22.04,     backend: cpu,    test: true  }
+          - { name: linux-arm64-cpu,  os: ubuntu-22.04-arm, backend: cpu,    test: true  }
+          - { name: macos-arm64,      os: macos-latest,     backend: cpu,    test: true  }
+          - { name: macos-x64,        os: macos-15-intel,   backend: cpu,    test: true  }
+          - { name: windows-x64-msvc, os: windows-2025,     backend: cpu,    test: true  }
+          # Tier 2: Vulkan Backend
+          - { name: linux-vulkan,     os: ubuntu-24.04,     backend: vulkan, test: true  }
+          - { name: windows-vulkan,   os: windows-2025,     backend: vulkan, test: true  }
+          
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Download Test Data
+        uses: actions/download-artifact@v4
+        with:
+          name: test-data
+          
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install Python Dependencies
+        run: pip install numpy scipy
+          
+      # ----- Linux Dependencies -----
+      - name: Install Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+          
+      - name: Install Vulkan SDK (Linux)
+        if: matrix.backend == 'vulkan' && runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y libvulkan-dev glslc mesa-vulkan-drivers
+          
+      # ----- macOS Dependencies -----  
+      - name: Install Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+        
+      # ----- Windows Dependencies -----
+      - name: Install Dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja -y
+        
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
+        run: |
+          $VK_VERSION = "1.4.313.2"
+          curl.exe -o VulkanSDK.exe -L "https://sdk.lunarg.com/sdk/download/${VK_VERSION}/windows/vulkansdk-windows-X64-${VK_VERSION}.exe"
+          Start-Process -FilePath .\VulkanSDK.exe -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${VK_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${VK_VERSION}\bin"
+          
+      # ----- Configure -----
+      - name: Configure (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=OFF \
+            -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} \
+            -DMBR_BUILD_TESTS=ON \
+            -DMBR_BUILD_CLI=ON
+            
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -B build -G "Ninja Multi-Config" `
+            -DGGML_CUDA=OFF `
+            -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} `
+            -DMBR_BUILD_TESTS=ON `
+            -DMBR_BUILD_CLI=ON
+            
+      # ----- Build -----
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: cmake --build build --config Release -j $(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+        
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
+        
+      # ----- Unit Tests -----
+      - name: Run Unit Tests
+        if: matrix.test
+        env:
+          MBR_MODEL_PATH: ${{ github.workspace }}/model.gguf
+          MBR_TEST_DATA_DIR: ${{ github.workspace }}/test_data
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 300
+        
+      # ----- CLI Tests -----
+      - name: Test CLI
+        if: matrix.test
+        shell: bash
+        env:
+          MBR_MODEL_PATH: ${{ github.workspace }}/model.gguf
+        run: |
+          echo "=== CLI Test Suite ==="
+          
+          # Determine CLI path based on OS
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            CLI="./build/bin/Release/mel_band_roformer-cli.exe"
+          else
+            CLI="./build/mel_band_roformer-cli"
+          fi
+          
+          # 1. Test --help
+          echo "[1/4] Testing --help..."
+          $CLI --help
+          
+          # 2. Test with missing arguments (should fail)
+          echo "[2/4] Testing error handling..."
+          if $CLI 2>/dev/null; then
+            echo "ERROR: CLI should fail without arguments"
+            exit 1
+          fi
+          
+          # 3. Generate test audio (short 2-second clip)
+          echo "[3/4] Generating test audio..."
+          python3 -c "
+          import numpy as np
+          import scipy.io.wavfile as wav
+          sr = 44100
+          t = np.linspace(0, 2.0, sr * 2)
+          stereo = np.stack([np.sin(2*np.pi*440*t), np.sin(2*np.pi*880*t)], axis=1).astype(np.float32) * 0.5
+          wav.write('cli_test_input.wav', sr, stereo)
+          "
+          
+          # 4. Run full inference
+          echo "[4/4] Running inference..."
+          $CLI "$MBR_MODEL_PATH" cli_test_input.wav cli_test_output.wav --chunk-size 88200 --overlap 2
+          
+          # Verify output exists and has reasonable size
+          if [[ ! -f cli_test_output.wav ]]; then
+            echo "ERROR: Output file not created"
+            exit 1
+          fi
+          
+          OUTPUT_SIZE=$(stat -c%s cli_test_output.wav 2>/dev/null || stat -f%z cli_test_output.wav)
+          if [[ $OUTPUT_SIZE -lt 1000 ]]; then
+            echo "ERROR: Output file too small: $OUTPUT_SIZE bytes"
+            exit 1
+          fi
+          
+          echo "=== CLI Tests Passed ==="
+          
+      # ----- Upload Artifacts -----
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.name }}
+          path: |
+            build/bin/
+            build/lib*/
+            build/*.dll
+            build/*.so
+            build/*.dylib
+            build/mel_band_roformer-cli*
+            build/Release/
+          retention-days: 7
+
+  # ===========================================================================
+  # CUDA Build: Linux (Compile Only - No GPU for testing)
+  # ===========================================================================
+  build-cuda-linux:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.6.2-devel-ubuntu24.04
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Install Dependencies
+        run: |
+          apt-get update
+          apt-get install -y cmake build-essential ninja-build git
+          
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" \
+            -DMBR_BUILD_TESTS=OFF \
+            -DMBR_BUILD_CLI=ON
+            
+      - name: Build
+        run: cmake --build build --config Release -j $(nproc)
+        
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-linux-cuda
+          path: |
+            build/bin/
+            build/lib*/
+            build/*.so
+          retention-days: 7
+
+  # ===========================================================================
+  # CUDA Build: Windows (Compile Only - No GPU for testing)
+  # ===========================================================================
+  build-cuda-windows:
+    runs-on: windows-2022
+    
+    env:
+      CUDA_VERSION: '12.4'
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Install CUDA Toolkit
+        run: |
+          # Download and install CUDA toolkit components
+          mkdir -p "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ env.CUDA_VERSION }}"
+          choco install unzip -y
+          $components = @(
+            "cuda_cudart-windows-x86_64-12.4.127-archive",
+            "cuda_nvcc-windows-x86_64-12.4.131-archive",
+            "cuda_nvrtc-windows-x86_64-12.4.127-archive",
+            "libcublas-windows-x86_64-12.4.5.8-archive",
+            "cuda_cccl-windows-x86_64-12.4.127-archive"
+          )
+          foreach ($comp in $components) {
+            $url = "https://developer.download.nvidia.com/compute/cuda/redist/$($comp.Split('-')[0])/$($comp.Replace('cuda_', '').Split('-')[0])/windows-x86_64/$comp.zip"
+            # Simplified: just use the base URL pattern
+          }
+          # For CI, use the official CUDA installer approach
+          curl.exe -o cuda_installer.exe -L "https://developer.download.nvidia.com/compute/cuda/12.4.0/network_installers/cuda_12.4.0_windows_network.exe"
+          Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s nvcc_12.4 cudart_12.4 cublas_12.4 cufft_12.4" -Wait -NoNewWindow
+          Add-Content $env:GITHUB_ENV "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
+          Add-Content $env:GITHUB_PATH "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"
+        
+      - name: Install Ninja
+        run: choco install ninja -y
+        
+      - name: Configure
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -B build -G "Ninja Multi-Config" ^
+            -DGGML_CUDA=ON ^
+            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" ^
+            -DMBR_BUILD_TESTS=OFF ^
+            -DMBR_BUILD_CLI=ON
+            
+      - name: Build
+        run: cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
+        
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-windows-cuda
+          path: |
+            build/bin/
+            build/Release/
+            build/*.dll
+          retention-days: 7
