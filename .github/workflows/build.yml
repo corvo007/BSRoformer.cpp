@@ -323,8 +323,13 @@ jobs:
   # CUDA Build: Linux (Compile Only - No GPU for testing)
   # ===========================================================================
   build-cuda-linux:
+    name: build-cuda-linux-${{ matrix.cuda_version }}
     runs-on: ubuntu-latest
-    container: nvidia/cuda:12.6.2-devel-ubuntu24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda_version: ["11.8.0", "12.9.1", "13.1.0"]
+    container: nvidia/cuda:${{ matrix.cuda_version }}-devel-ubuntu22.04
     
     steps:
       - name: Install Git
@@ -359,7 +364,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-linux-cuda
+          name: build-linux-cuda-${{ matrix.cuda_version }}
           path: |
             build/bin/
             build/lib*/
@@ -370,10 +375,15 @@ jobs:
   # CUDA Build: Windows (Compile Only - No GPU for testing)
   # ===========================================================================
   build-cuda-windows:
+    name: build-cuda-windows-${{ matrix.cuda_version }}
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda_version: ["11.8.0", "12.9.1", "13.1.0"]
     
     env:
-      CUDA_VERSION: '12.4'
+      CUDA_VERSION: ${{ matrix.cuda_version }}
     
     steps:
       - name: Checkout
@@ -383,12 +393,22 @@ jobs:
         run: git clone --depth 1 https://github.com/ggerganov/ggml.git ggml
       
       - name: Install CUDA Toolkit
+        shell: powershell
         run: |
-          # For CI, use the official CUDA installer approach
-          curl.exe -o cuda_installer.exe -L "https://developer.download.nvidia.com/compute/cuda/12.4.0/network_installers/cuda_12.4.0_windows_network.exe"
-          Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s nvcc_12.4 cudart_12.4 cublas_12.4 cublas_dev_12.4 cufft_12.4 cufft_dev_12.4" -Wait -NoNewWindow
-          Add-Content $env:GITHUB_ENV "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
-          Add-Content $env:GITHUB_PATH "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"
+          $cuda_ver = "${{ matrix.cuda_version }}"
+          $cuda_url = "https://developer.download.nvidia.com/compute/cuda/${cuda_ver}/network_installers/cuda_${cuda_ver}_windows_network.exe"
+          
+          echo "Downloading CUDA $cuda_ver from $cuda_url"
+          curl.exe -o cuda_installer.exe -L "$cuda_url"
+          
+          # Install arguments might vary slightly but usually these persistent args work for network installers
+          # Note: 11.8 and newer usually support these silent flags
+          Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s nvcc_${cuda_ver} cudart_${cuda_ver} cublas_${cuda_ver} cublas_dev_${cuda_ver} cufft_${cuda_ver} cufft_dev_${cuda_ver}" -Wait -NoNewWindow
+          
+          # Path handling for major.minor
+          $cuda_ver_short = $cuda_ver.Substring(0, $cuda_ver.LastIndexOf('.'))
+          Add-Content $env:GITHUB_ENV "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${cuda_ver_short}"
+          Add-Content $env:GITHUB_PATH "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${cuda_ver_short}\bin"
         
       - name: Install Ninja
         run: choco install ninja -y
@@ -408,7 +428,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-windows-cuda
+          name: build-windows-cuda-${{ matrix.cuda_version }}
           path: |
             build/bin/
             build/Release/
