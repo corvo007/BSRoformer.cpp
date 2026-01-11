@@ -19,7 +19,7 @@ on:
         description: '输出模型名称 (用于文件命名, 例如: voc_fv6)'
         required: false
         type: string
-        default: 'model'
+        default: 'MelBandRoformer-'
       quantization_types:
         description: '要转换的量化类型 (用逗号分隔, 留空则转换全部)'
         required: false
@@ -41,7 +41,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
           
       - name: Install Dependencies
         run: |
