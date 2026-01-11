@@ -203,6 +203,7 @@ jobs:
         env:
           MBR_MODEL_PATH: ${{ github.workspace }}/model.gguf
           MBR_TEST_DATA_DIR: ${{ github.workspace }}/test_data
+          MBR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
         run: ctest --test-dir build -C Release --output-on-failure --timeout 300
         
       # ----- CLI Tests -----
@@ -211,14 +212,25 @@ jobs:
         shell: bash
         env:
           MBR_MODEL_PATH: ${{ github.workspace }}/model.gguf
+          MBR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
         run: |
           echo "=== CLI Test Suite ==="
           
           # Determine CLI path based on OS
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            CLI="./build/bin/Release/mel_band_roformer-cli.exe"
+            CLI="./build/Release/mel_band_roformer-cli.exe"
           else
             CLI="./build/mel_band_roformer-cli"
+          fi
+          
+          if [[ ! -f "$CLI" ]]; then
+            echo "CLI not found at $CLI"
+            echo "Searching build directory..."
+            find build -name "mel_band_roformer-cli*"
+            # Try alternate path for Windows
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+               CLI="./build/Release/mel_band_roformer-cli.exe"
+            fi
           fi
           
           # 1. Test --help
@@ -232,16 +244,9 @@ jobs:
             exit 1
           fi
           
-          # 3. Generate test audio (short 2-second clip)
-          echo "[3/4] Generating test audio..."
-          python3 -c "
-          import numpy as np
-          import scipy.io.wavfile as wav
-          sr = 44100
-          t = np.linspace(0, 2.0, sr * 2)
-          stereo = np.stack([np.sin(2*np.pi*440*t), np.sin(2*np.pi*880*t)], axis=1).astype(np.float32) * 0.5
-          wav.write('cli_test_input.wav', sr, stereo)
-          "
+          # 3. Use existing test audio
+          echo "[3/4] Using generated test audio..."
+          cp test_audio.wav cli_test_input.wav
           
           # 4. Run full inference
           echo "[4/4] Running inference..."

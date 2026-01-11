@@ -18,8 +18,13 @@ MelBandRoformer::~MelBandRoformer() {
 }
 
 void MelBandRoformer::Initialize(const std::string& model_path) {
-    // Use best available backend
-    backend_ = ggml_backend_init_best();
+    // Use best available backend, but allow forcing CPU
+    if (std::getenv("MBR_FORCE_CPU")) {
+        backend_ = ggml_backend_cpu_init();
+    } else {
+        backend_ = ggml_backend_init_best();
+    }
+    
     if (!backend_) {
         throw std::runtime_error("Failed to initialize backend");
     }
