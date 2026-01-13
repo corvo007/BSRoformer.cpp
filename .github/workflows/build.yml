@@ -498,7 +498,7 @@ jobs:
         with:
           cuda: ${{ matrix.cuda_version }}
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev", "cccl", "crt", "nvvm", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev", "crt", "nvvm", "visual_studio_integration"]'
 
       - name: Install Ninja
         run: choco install ninja -y
