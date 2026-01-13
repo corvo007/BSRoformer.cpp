@@ -495,6 +495,7 @@ jobs:
             -DGGML_CUDA=ON ^
             -DGGML_CUDA_FORCE_MMQ=ON ^
             -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" ^
+            -DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler" ^
             -DMBR_BUILD_TESTS=OFF ^
             -DMBR_BUILD_CLI=ON
           cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
