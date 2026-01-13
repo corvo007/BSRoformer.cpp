@@ -377,11 +377,14 @@ jobs:
   # ===========================================================================
   build-cuda-linux:
     name: build-cuda-linux-${{ matrix.cuda_version }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        cuda_version: ["11.8.0", "12.9.1", "13.1.0"]
+        include:
+          - { cuda_version: "11.8.0", os: ubuntu-22.04 }
+          - { cuda_version: "12.9.1", os: ubuntu-latest }
+          - { cuda_version: "13.1.0", os: ubuntu-latest }
     
     steps:  
       - name: Checkout
@@ -395,11 +398,11 @@ jobs:
         with:
           cuda: ${{ matrix.cuda_version }}
           method: network
-          sub-packages: '["nvcc", "cudart"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust"]'
       
       - name: Install Dependencies
         run: |
-          apt-get install -y cmake build-essential ninja-build
+          sudo apt-get install -y cmake build-essential ninja-build
           
       - name: Configure
         run: |
@@ -408,7 +411,6 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_DIR=ggml \
             -DGGML_CUDA=ON \
-            -DGGML_CUDA_FORCE_MMQ=ON \
             -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" \
             -DMBR_BUILD_TESTS=OFF \
             -DMBR_BUILD_CLI=ON
@@ -481,7 +483,7 @@ jobs:
         with:
           cuda: ${{ matrix.cuda_version }}
           method: network
-          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
         
       - name: Install Ninja
         run: choco install ninja -y
@@ -493,7 +495,6 @@ jobs:
           cmake -B build -G "Ninja Multi-Config" ^
             -DGGML_DIR=ggml ^
             -DGGML_CUDA=ON ^
-            -DGGML_CUDA_FORCE_MMQ=ON ^
             -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" ^
             -DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler" ^
             -DMBR_BUILD_TESTS=OFF ^
