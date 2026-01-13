@@ -489,7 +489,7 @@ jobs:
         with:
           cuda: ${{ matrix.cuda_version }}
           method: network
-          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
         
       - name: Install Ninja
         run: choco install ninja -y
@@ -499,7 +499,6 @@ jobs:
         env:
           CUDAFLAGS: -allow-unsupported-compiler
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -B build -G "Ninja Multi-Config" ^
             -DGGML_DIR=ggml ^
             -DGGML_CUDA=ON ^
