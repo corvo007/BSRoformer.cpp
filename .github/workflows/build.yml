@@ -398,7 +398,8 @@ jobs:
         with:
           cuda: ${{ matrix.cuda_version }}
           method: network
-          sub-packages: '["nvcc", "cudart", "libcublas", "libcublas-dev", "thrust"]'
+          sub-packages: '["nvcc", "cudart", "thrust"]'
+          non-cuda-sub-packages: '["libcublas", "libcublas-dev"]'
       
       - name: Install Dependencies
         run: |
