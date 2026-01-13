@@ -382,19 +382,18 @@ jobs:
       fail-fast: false
       matrix:
         cuda_version: ["11.8.0", "12.9.1", "13.1.0"]
-    container: nvidia/cuda:${{ matrix.cuda_version }}-devel-ubuntu22.04
     
-    steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-          
+    steps:  
       - name: Checkout
         uses: actions/checkout@v4
       
       - name: Clone GGML
         run: git clone --depth 1 https://github.com/ggerganov/ggml.git ggml
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@master
+        with:
+          cuda: ${{ matrix.cuda_version }}
       
       - name: Install Dependencies
         run: |
@@ -475,7 +474,7 @@ jobs:
         run: git clone --depth 1 https://github.com/ggerganov/ggml.git ggml
       
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.18
+        uses: Jimver/cuda-toolkit@master
         with:
           cuda: ${{ matrix.cuda_version }}
         
