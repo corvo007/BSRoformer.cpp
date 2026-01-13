@@ -208,7 +208,7 @@ jobs:
           MBR_MODEL_PATH: ${{ github.workspace }}/model.gguf
           MBR_TEST_DATA_DIR: ${{ github.workspace }}/test_data
           MBR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
-        run: ctest --test-dir build -C Release --output-on-failure --timeout 300
+        run: ctest --test-dir build -C Release -V --output-on-failure --timeout 300
         
       # ----- CLI Tests -----
       - name: Test CLI
