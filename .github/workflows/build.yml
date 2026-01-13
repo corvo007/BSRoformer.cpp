@@ -334,8 +334,9 @@ jobs:
             chmod +x release/mel-band-roformer/mel_band_roformer-cli
           fi
           
-          # Copy shared libraries if exist
-          find build -name "*.so*" -o -name "*.dylib" | while read lib; do
+          # Copy shared libraries if exist (only real files, not symlinks)
+          # Use -type f to get real files, exclude symlinks to avoid duplicates
+          find build \( -name "*.so" -o -name "*.dylib" \) -type f ! -type l | while read lib; do
             cp "$lib" release/mel-band-roformer/ 2>/dev/null || true
           done
           
