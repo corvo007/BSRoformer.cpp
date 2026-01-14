@@ -335,8 +335,7 @@ jobs:
           fi
           
           # Copy shared libraries if exist (only real files, not symlinks)
-          # Use -type f to get real files, exclude symlinks to avoid duplicates
-          find build \( -name "*.so" -o -name "*.dylib" \) -type f ! -type l | while read lib; do
+          find build \( -name "*.so*" -o -name "*.dylib" \) -type f ! -type l | while read lib; do
             cp "$lib" release/mel-band-roformer/ 2>/dev/null || true
           done
           
