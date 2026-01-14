@@ -24,7 +24,7 @@ Mel-Band-Roformer 音频源分离模型的高性能 C++ 推理实现。
 ### 下载
 
 - **预构建程序**：在 [Releases](../../releases) 页面下载对应平台的可执行文件
-- **GGUF 模型**：在 [MelBandRoformer-GGUF](https://huggingface.co/MelBandRoformer-GGUF) 下载预转换的模型文件
+- **GGUF 模型**：在 [MelBandRoformer-GGUF](https://huggingface.co/chenmozhijin/MelBandRoformer-GGUF) 下载预转换的模型文件
 
 ### 命令行使用
 

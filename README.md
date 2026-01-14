@@ -24,7 +24,7 @@ This project is a pure C++ inference engine for the Mel-Band-Roformer audio sour
 ### Download
 
 - **Pre-built Binaries**: Download executables for your platform from the [Releases](../../releases) page
-- **GGUF Models**: Download pre-converted model files from [MelBandRoformer-GGUF](https://huggingface.co/MelBandRoformer-GGUF)
+- **GGUF Models**: Download pre-converted model files from [MelBandRoformer-GGUF](https://huggingface.co/chenmozhijin/MelBandRoformer-GGUF)
 
 ### Command Line Usage
 
