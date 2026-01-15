@@ -368,23 +368,19 @@ jobs:
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.name }}
+          name: MelBandRoformer-${{ matrix.name }}
           path: release/mel-band-roformer/
           retention-days: 30
 
   # ===========================================================================
-  # CUDA Build: Linux (Compile Only - No GPU for testing)
+  # CUDA Build: Linux (Verification Only - Not for Release)
   # ===========================================================================
+  # Note: We do not provide precompiled CUDA binaries for Linux.
+  # This build exists solely to verify the code compiles with CUDA on Linux.
+  # Linux users should build from source for optimal performance.
   build-cuda-linux:
-    name: build-cuda-linux-${{ matrix.cuda_version }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { cuda_version: "11.8.0", os: ubuntu-22.04 }
-          - { cuda_version: "12.9.1", os: ubuntu-latest }
-          - { cuda_version: "13.1.0", os: ubuntu-latest }
+    name: build-cuda-linux-verify
+    runs-on: ubuntu-latest
     
     steps:  
       - name: Checkout
@@ -396,7 +392,7 @@ jobs:
       - name: Install CUDA Toolkit
         uses: Jimver/cuda-toolkit@master
         with:
-          cuda: ${{ matrix.cuda_version }}
+          cuda: "12.9.1"
           method: network
           sub-packages: '["nvcc", "cudart", "thrust"]'
           non-cuda-sub-packages: '["libcublas", "libcublas-dev"]'
@@ -413,92 +409,62 @@ jobs:
             -DGGML_DIR=ggml \
             -DGGML_CUDA=ON \
             -DGGML_CUDA_FORCE_MMQ=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Static \
+            -DCMAKE_CUDA_ARCHITECTURES="61;75;80;86;89;120" \
             -DMBR_BUILD_TESTS=OFF \
             -DMBR_BUILD_CLI=ON
             
       - name: Build
         run: cmake --build build --config Release -j $(nproc)
         
-      - name: Upload Artifacts
+      - name: Upload Build Artifacts (Debug Only)
         uses: actions/upload-artifact@v4
         with:
-          name: build-linux-cuda-${{ matrix.cuda_version }}
+          name: build-linux-cuda-verify
           path: |
             build/bin/
             build/lib*/
             build/*.so
           retention-days: 7
-      
-      # ----- Prepare Release Artifact -----
-      - name: Prepare Release Artifact
-        run: |
-          # Create release directory
-          mkdir -p release/mel-band-roformer
-          
-          # Find and copy CLI executable
-          CLI_PATH=$(find build -name "mel_band_roformer-cli" -type f | head -n 1)
-          if [[ -n "$CLI_PATH" ]]; then
-            cp "$CLI_PATH" release/mel-band-roformer/
-            chmod +x release/mel-band-roformer/mel_band_roformer-cli
-          fi
-          
-          # Copy shared libraries
-          find build -name "*.so*" | while read lib; do
-            cp "$lib" release/mel-band-roformer/ 2>/dev/null || true
-          done
-          
-          # List contents
-          echo "Release artifact contents:"
-          ls -lh release/mel-band-roformer/
-      
-      - name: Upload Release Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-linux-cuda-${{ matrix.cuda_version }}
-          path: release/mel-band-roformer/
-          retention-days: 30
 
+  # CUDA Build: Windows (Single-Architecture Distribution)
   # ===========================================================================
-  # CUDA Build: Windows (Compile Only - No GPU for testing)
-  # ===========================================================================
+  # Strategy: Each architecture built separately for minimal file size
+  # - CUDA 11.8: GTX 10 / RTX 20 / RTX 30 / RTX 40 (Driver >= 520)
+  # - CUDA 12.9: RTX 50 only (Driver >= 575)
   build-cuda-windows:
-    name: build-cuda-windows-${{ matrix.cuda_version }}
+    name: build-cuda-windows-${{ matrix.arch_name }}
     runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
-        cuda_version: ["11.8.0", "12.9.1", "13.1.0"]
-    
-    env:
-      CUDA_VERSION: ${{ matrix.cuda_version }}
+        include:
+          # CUDA 11.8 builds (Driver >= 520)
+          - { cuda_version: "11.8.0", arch: "61", arch_name: "gtx10-pascal" }
+          - { cuda_version: "11.8.0", arch: "75", arch_name: "rtx20-turing" }
+          - { cuda_version: "11.8.0", arch: "80", arch_name: "rtx30-desktop" }
+          - { cuda_version: "11.8.0", arch: "86", arch_name: "rtx30-mobile" }
+          - { cuda_version: "11.8.0", arch: "89", arch_name: "rtx40-ada" }
+          
+          # CUDA 12.9 build (Driver >= 575)
+          - { cuda_version: "12.9.1", arch: "120", arch_name: "rtx50-blackwell" }
     
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       
       - name: Setup MSVC
-        if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Clone GGML
         run: git clone --depth 1 https://github.com/ggerganov/ggml.git ggml
       
       - name: Install CUDA Toolkit
-        if: ${{ matrix.cuda_version != '13.1.0' }}
         uses: Jimver/cuda-toolkit@master
         with:
           cuda: ${{ matrix.cuda_version }}
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-        
-      - name: Install CUDA Toolkit(13.1.0)
-        if: ${{ matrix.cuda_version == '13.1.0' }}
-        uses: Jimver/cuda-toolkit@master
-        with:
-          cuda: ${{ matrix.cuda_version }}
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev", "crt", "nvvm", "visual_studio_integration"]'
 
       - name: Install Ninja
         run: choco install ninja -y
@@ -506,24 +472,82 @@ jobs:
       - name: Configure and Build
         shell: cmd
         run: |
+          REM CUDA 11.8 requires compatibility flags for newer MSVC
           if "${{ matrix.cuda_version }}" == "11.8.0" (
             set CUDAFLAGS=-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR
           ) else (
             set CUDAFLAGS=
           )
+          
           cmake -B build -G "Ninja Multi-Config" ^
             -DGGML_DIR=ggml ^
             -DGGML_CUDA=ON ^
             -DGGML_CUDA_FORCE_MMQ=ON ^
-            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89" ^
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Static ^
+            -DCMAKE_CUDA_ARCHITECTURES="${{ matrix.arch }}" ^
             -DMBR_BUILD_TESTS=OFF ^
             -DMBR_BUILD_CLI=ON
           cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
         
-      - name: Upload Artifacts
+      - name: Verify Binary Dependencies
+        shell: pwsh
+        run: |
+          Write-Host "=== Verifying Binary Dependencies ===" -ForegroundColor Cyan
+          
+          # Find all DLLs and EXEs
+          $binaries = Get-ChildItem -Path build -Include *.dll,*.exe -Recurse -File
+          
+          if ($binaries.Count -eq 0) {
+            Write-Host "WARNING: No binaries found!" -ForegroundColor Yellow
+            exit 0
+          }
+          
+          $hasProblems = $false
+          $forbiddenDeps = @("cudart64", "cudart32", "cublas64", "cublas32", "cublasLt64")
+          
+          foreach ($binary in $binaries) {
+            Write-Host "`n--- $($binary.Name) ---" -ForegroundColor Green
+            
+            # Use dumpbin to get dependencies
+            $deps = & dumpbin /dependents $binary.FullName 2>&1
+            
+            # Extract DLL names
+            $dllDeps = $deps | Select-String -Pattern "^\s+(\S+\.dll)" | ForEach-Object { $_.Matches.Groups[1].Value }
+            
+            if ($dllDeps) {
+              Write-Host "Dependencies:"
+              foreach ($dep in $dllDeps) {
+                # Check for forbidden dependencies
+                $isForbidden = $false
+                foreach ($forbidden in $forbiddenDeps) {
+                  if ($dep -like "$forbidden*") {
+                    Write-Host "  [FAIL] $dep" -ForegroundColor Red
+                    $isForbidden = $true
+                    $hasProblems = $true
+                  }
+                }
+                if (-not $isForbidden) {
+                  Write-Host "  [OK] $dep" -ForegroundColor Gray
+                }
+              }
+            } else {
+              Write-Host "  No DLL dependencies found (static build)" -ForegroundColor Gray
+            }
+          }
+          
+          Write-Host "`n=== Summary ===" -ForegroundColor Cyan
+          if ($hasProblems) {
+            Write-Host "FAILED: Found forbidden CUDA runtime dependencies!" -ForegroundColor Red
+            Write-Host "The build should use static CUDA runtime linking." -ForegroundColor Red
+            exit 1
+          } else {
+            Write-Host "PASSED: No forbidden CUDA dependencies found." -ForegroundColor Green
+          }
+      
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-windows-cuda-${{ matrix.cuda_version }}
+          name: build-windows-cuda-${{ matrix.arch_name }}
           path: |
             build/bin/
             build/Release/
@@ -555,6 +579,6 @@ jobs:
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-windows-cuda-${{ matrix.cuda_version }}
-          path: release/mel-band-roformer/
+          name: MelBandRoformer-windows-cuda-${{ matrix.arch_name }}
+          path: release\mel-band-roformer\
           retention-days: 30

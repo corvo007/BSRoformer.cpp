@@ -26,6 +26,23 @@ This project is a pure C++ inference engine for the Mel-Band-Roformer audio sour
 - **Pre-built Binaries**: Download executables for your platform from the [Releases](../../releases) page
 - **GGUF Models**: Download pre-converted model files from [MelBandRoformer-GGUF](https://huggingface.co/chenmozhijin/MelBandRoformer-GGUF)
 
+#### Choosing CUDA Version (Windows)
+
+We provide optimized CUDA builds for different GPU architectures. Choose the version that matches your GPU:
+
+| GPU Series | Download | Driver |
+|------------|----------|--------|
+| GeForce RTX 50 series | `cuda-rtx50-blackwell` | ≥ 575 |
+| GeForce RTX 40 series | `cuda-rtx40-ada` | ≥ 520 |
+| GeForce RTX 30 series (Desktop) | `cuda-rtx30-desktop` | ≥ 520 |
+| GeForce RTX 30 series (Laptop) | `cuda-rtx30-mobile` | ≥ 520 |
+| GeForce RTX 20 series | `cuda-rtx20-turing` | ≥ 520 |
+| GeForce GTX 10 series | `cuda-gtx10-pascal` | ≥ 520 |
+
+> **Tip**: Use `nvidia-smi` command to check your GPU model.
+
+> **Note**: Linux CUDA binaries are not provided. Linux users should build from source for optimal performance.
+
 ### Command Line Usage
 
 ```bash
