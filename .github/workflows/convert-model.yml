@@ -25,6 +25,14 @@ on:
         required: false
         type: string
         default: 'fp32,fp16,q8_0,q4_0,q4_1,q5_0,q5_1'
+      gguf_name:
+        description: 'GGUF 元数据中的模型名称 (可选, 默认: Mel-Band-Roformer Separator)'
+        required: false
+        type: string
+      gguf_description:
+        description: 'GGUF 元数据中的模型描述 (可选, 默认: Music source separation model)'
+        required: false
+        type: string
 
 env:
   SUPPORTED_QUANT_TYPES: 'fp32,fp16,q8_0,q4_0,q4_1,q5_0,q5_1'
@@ -98,6 +106,8 @@ jobs:
           CHECKPOINT="model/${{ inputs.checkpoint_path }}"
           CONFIG="model/${{ inputs.config_path }}"
           MODEL_NAME="${{ inputs.model_name }}"
+          GGUF_NAME="${{ inputs.gguf_name }}"
+          GGUF_DESC="${{ inputs.gguf_description }}"
           QUANT_TYPES="${{ inputs.quantization_types }}"
           
           # If no types specified, use all supported types
@@ -124,11 +134,12 @@ jobs:
             
             echo ">>> Converting to $qtype -> $OUTPUT_FILE"
             
-            python scripts/convert_to_gguf.py \
-              --ckpt "$CHECKPOINT" \
-              --config "$CONFIG" \
-              --out "$OUTPUT_FILE" \
-              --dtype "$qtype"
+            # Build convert command with optional metadata args
+            CMD="python scripts/convert_to_gguf.py --ckpt \"$CHECKPOINT\" --config \"$CONFIG\" --out \"$OUTPUT_FILE\" --dtype \"$qtype\""
+            [ -n "$GGUF_NAME" ] && CMD="$CMD --name \"$GGUF_NAME\""
+            [ -n "$GGUF_DESC" ] && CMD="$CMD --description \"$GGUF_DESC\""
+            
+            eval $CMD
               
             # Show file size
             SIZE=$(ls -lh "$OUTPUT_FILE" | awk '{print $5}')
