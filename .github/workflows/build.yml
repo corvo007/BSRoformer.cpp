@@ -534,12 +534,17 @@ jobs:
           # 61=Pascal (GTX 10), 75=Turing (RTX 20/GTX 16), 86=Ampere (RTX 30), 89=Ada (RTX 40), 120=Blackwell (RTX 50)
           $cudaVersion = "${{ matrix.cuda_version }}"
           if ($cudaVersion -match "^11\.") {
-            # CUDA 11.x doesn't support arch 120
+            # CUDA 11.x: Support Pascal (61) to Ada (89)
             $cudaArchs = "61;75;86;89"
             $env:CUDAFLAGS = "-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR"
+          } elseif ($cudaVersion -match "^12\.") {
+            # CUDA 12.x: Support Pascal (61) to Blackwell (120) (technically 120 needs 12.8+, keeping unified for now or simple)
+            # Actually 12.x still supports Pascal.
+            $cudaArchs = "61;75;86;89"
+            $env:CUDAFLAGS = ""
           } else {
-            # CUDA 12+: Add RTX 50 (Blackwell)
-            $cudaArchs = "61;75;86;89;120"
+            # CUDA 13+: Drop Pascal (61). Support Turing (75) to Blackwell (120)
+            $cudaArchs = "75;86;89;120"
             $env:CUDAFLAGS = ""
           }
           Write-Host "Building for CUDA architectures: $cudaArchs"
