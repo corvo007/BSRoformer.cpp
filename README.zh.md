@@ -26,23 +26,6 @@ Mel-Band-Roformer 音频源分离模型的高性能 C++ 推理实现。
 - **预构建程序**：在 [Releases](../../releases) 页面下载对应平台的可执行文件
 - **GGUF 模型**：在 [MelBandRoformer-GGUF](https://huggingface.co/chenmozhijin/MelBandRoformer-GGUF) 下载预转换的模型文件
 
-#### CUDA 版本选择 (Windows)
-
-根据您的显卡型号选择对应版本：
-
-| 显卡系列 | 下载版本 | 驱动要求 |
-|---------|---------|---------|
-| GeForce RTX 50 系列 | `cuda-rtx50-blackwell` | ≥ 575 |
-| GeForce RTX 40 系列 | `cuda-rtx40-ada` | ≥ 520 |
-| GeForce RTX 30 系列 (台式机) | `cuda-rtx30-desktop` | ≥ 520 |
-| GeForce RTX 30 系列 (笔记本) | `cuda-rtx30-mobile` | ≥ 520 |
-| GeForce RTX 20 系列 | `cuda-rtx20-turing` | ≥ 520 |
-| GeForce GTX 10 系列 | `cuda-gtx10-pascal` | ≥ 520 |
-
-> **提示**：使用 `nvidia-smi` 命令或 NVIDIA 控制面板查看显卡型号和驱动版本。
-
-> **注意**：Linux 不提供预编译 CUDA 版本，请[从源码构建](#编译命令)。
-
 ### 命令行使用
 
 ```bash
