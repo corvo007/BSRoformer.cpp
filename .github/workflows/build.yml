@@ -24,6 +24,8 @@ env:
   HF_CONFIG_PATH: melbandroformers/vocals/voc_gabox.yaml
   # Music-Source-Separation-Training repo
   MSST_REPO: https://github.com/ZFTurbo/Music-Source-Separation-Training.git
+  # Enable sccache GitHub Actions cache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   # ===========================================================================
@@ -138,6 +140,9 @@ jobs:
 
       - name: Install Python Dependencies
         run: pip install numpy scipy
+      
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
           
       # ----- Linux Dependencies -----
       - name: Install Dependencies (Linux)
@@ -179,6 +184,8 @@ jobs:
             -DGGML_DIR=ggml \
             -DGGML_CUDA=OFF \
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
             -DMBR_BUILD_TESTS=ON \
             -DMBR_BUILD_CLI=ON
             
@@ -189,6 +196,8 @@ jobs:
             -DGGML_DIR=ggml `
             -DGGML_CUDA=OFF `
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
             -DMBR_BUILD_TESTS=ON `
             -DMBR_BUILD_CLI=ON
             
@@ -404,6 +413,9 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get install -y cmake build-essential ninja-build
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
           
       - name: Configure
         run: |
@@ -418,6 +430,9 @@ jobs:
             -DGGML_CUDA=ON \
             -DGGML_CUDA_FORCE_MMQ=ON \
             -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHS" \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CUDA_COMPILER_LAUNCHER=sccache \
             -DMBR_BUILD_TESTS=OFF \
             -DMBR_BUILD_CLI=ON
             
@@ -506,6 +521,9 @@ jobs:
 
       - name: Install Ninja
         run: choco install ninja -y
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
         
       - name: Configure and Build
         shell: pwsh
@@ -529,6 +547,9 @@ jobs:
             -DGGML_CUDA=ON `
             -DGGML_CUDA_FORCE_MMQ=ON `
             "-DCMAKE_CUDA_ARCHITECTURES=$cudaArchs" `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CUDA_COMPILER_LAUNCHER=sccache `
             -DMBR_BUILD_TESTS=OFF `
             -DMBR_BUILD_CLI=ON
           cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
