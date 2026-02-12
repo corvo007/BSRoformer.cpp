@@ -623,8 +623,6 @@ ggml_tensor* BSRoformer::BuildTransformersGraph(
         ggml_tensor* f_x_resid1_norm = ggml_rms_norm(ctx, f_x_resid1, 1e-12f);
         f_x_resid1_norm = ggml_mul(ctx, f_x_resid1_norm, f_ff_norm_w);
         
-        x_fnorm = ggml_mul(ctx, x_fnorm, f_attn_norm_w);
-        
         ggml_tensor* f_ff_in_w = GetWeight(freq_ff_prefix + "_in.weight");
         ggml_tensor* f_ff_in_b = GetWeight(freq_ff_prefix + "_in.bias");
         if (!f_ff_in_w || !f_ff_in_b) { std::cerr << "Missing freq ff in\n"; return nullptr; }
