@@ -2,11 +2,11 @@
 
 中文 | [English](README.md)
 
-Mel-Band-Roformer 音频源分离模型的高性能 C++ 推理实现。
+**BS Roformer** 和 **Mel-Band-Roformer** 音频源分离模型的高性能 C++ 推理实现。
 
 ## 📖 简介
 
-本项目是 **Mel-Band-Roformer** 和 **BS Roformer** 音频源分离模型的纯 C++ 推理引擎，基于 [GGML](https://github.com/ggerganov/ggml) 张量库构建。主要用于从音乐中提取人声或伴奏。
+本项目是 **BS Roformer** 和 **Mel-Band-Roformer** 音频源分离模型的纯 C++ 推理引擎，基于 [GGML](https://github.com/ggerganov/ggml) 张量库构建。主要用于从音乐中提取人声或伴奏。
 
 ### ✨ 主要特性
 

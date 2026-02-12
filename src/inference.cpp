@@ -324,22 +324,36 @@ void Inference::RunInference(std::shared_ptr<ChunkState> state) {
     int n_frames = state->n_frames;
 
     // Prepare position data
-    // TODO: Cache these to avoid allocation every frame if size is constant
-    std::vector<int32_t> pos_time_data(n_frames * n_bands);
-    for(int i=0; i < n_frames * n_bands; ++i) pos_time_data[i] = i % n_frames;
+    // Use cached vectors to avoid allocation
+    int required_time_size = n_frames * n_bands;
+    if (pos_time_data_.size() != required_time_size) {
+        pos_time_data_.resize(required_time_size);
+        for(int i=0; i < required_time_size; ++i) pos_time_data_[i] = i % n_frames;
+    }
     
-    std::vector<int32_t> pos_freq_data(n_bands * n_frames);
-    for(int i=0; i < n_bands * n_frames; ++i) pos_freq_data[i] = i % n_bands;
+    int required_freq_size = n_bands * n_frames;
+    // Note: pos_freq logic (i % n_bands) depends on n_bands (constant) and total size.
+    // If n_frames changes, size changes, and values might depend on n_frames?
+    // Wait, pos_freq_data[i] = i % n_bands. 
+    // This is valid regardless of n_frames as long as size is correct.
+    // But we should regenerate if size changes.
+    if (pos_freq_data_.size() != required_freq_size) {
+        pos_freq_data_.resize(required_freq_size);
+        for(int i=0; i < required_freq_size; ++i) pos_freq_data_[i] = i % n_bands;
+    }
 
     // 4. Host -> Device
     ggml_backend_tensor_set(input_tensor_, state->stft_flattened.data(), 0, ggml_nbytes(input_tensor_));
-    ggml_backend_tensor_set(pos_time_, pos_time_data.data(), 0, ggml_nbytes(pos_time_));
-    ggml_backend_tensor_set(pos_freq_, pos_freq_data.data(), 0, ggml_nbytes(pos_freq_));
+    ggml_backend_tensor_set(pos_time_, pos_time_data_.data(), 0, ggml_nbytes(pos_time_));
+    ggml_backend_tensor_set(pos_freq_, pos_freq_data_.data(), 0, ggml_nbytes(pos_freq_));
 
     // 5. Compute
     ggml_backend_graph_compute(model_->GetBackend(), gf_);
 
     // 6. Device -> Host
+    // Avoid reallocation if size roughly matches? 
+    // ggml_nelements(mask_out_tensor_) is fixed for a given n_frames.
+    // state->mask_output is a vector. resize handles it (no op if same size).
     state->mask_output.resize(ggml_nelements(mask_out_tensor_));
     ggml_backend_tensor_get(mask_out_tensor_, state->mask_output.data(), 0, ggml_nbytes(mask_out_tensor_));
 }

@@ -2,11 +2,11 @@
 
 [中文](README.zh.md) | English
 
-High-performance C++ inference implementation for the Mel-Band-Roformer audio source separation model.
+High-performance C++ inference implementation for the **BS Roformer** and **Mel-Band-Roformer** audio source separation model.
 
 ## 📖 Introduction
 
-This project is a pure C++ inference engine for the **Mel-Band-Roformer** and **BS Roformer** audio source separation models, built on the [GGML](https://github.com/ggerganov/ggml) tensor library. It primarily used for extracting vocals or accompaniment from music.
+This project is a pure C++ inference engine for the **BS Roformer** and **Mel-Band-Roformer** audio source separation models, built on the [GGML](https://github.com/ggerganov/ggml) tensor library. It primarily used for extracting vocals or accompaniment from music.
 
 ### ✨ Key Features
 

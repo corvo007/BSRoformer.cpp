@@ -18,6 +18,10 @@
 #include <cstring>
 #include <algorithm> // for std::swap
 
+#ifdef USE_OPENMP
+#include <omp.h>
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -105,21 +109,34 @@ inline void fft_radix2(Complex* data, int n, bool inverse = false) {
  * @param input Real input array of size n
  * @param output Complex output array of size n/2+1
  * @param n Size of input (must be power of 2)
+ * @param buffer Temporary buffer of size n (optional, handled internally if null)
  */
-inline void rfft(const float* input, Complex* output, int n) {
+inline void rfft(const float* input, Complex* output, int n, std::vector<Complex>* buffer_ptr = nullptr) {
     // Copy to complex buffer
-    std::vector<Complex> buffer(n);
-    for (int i = 0; i < n; ++i) {
-        buffer[i] = Complex(input[i], 0.0f);
-    }
-    
-    // Compute full FFT
-    fft_radix2(buffer.data(), n, false);
-    
-    // Extract first n/2+1 coefficients (one-sided)
-    int n_out = n / 2 + 1;
-    for (int i = 0; i < n_out; ++i) {
-        output[i] = buffer[i];
+    // Use provided buffer to avoid allocation
+    if (buffer_ptr) {
+        if (buffer_ptr->size() < static_cast<size_t>(n)) buffer_ptr->resize(n);
+        for (int i = 0; i < n; ++i) {
+            (*buffer_ptr)[i] = Complex(input[i], 0.0f);
+        }
+        fft_radix2(buffer_ptr->data(), n, false);
+        
+        int n_out = n / 2 + 1;
+        for (int i = 0; i < n_out; ++i) {
+            output[i] = (*buffer_ptr)[i];
+        }
+    } else {
+        std::vector<Complex> buffer(n);
+        for (int i = 0; i < n; ++i) {
+            buffer[i] = Complex(input[i], 0.0f);
+        }
+        
+        fft_radix2(buffer.data(), n, false);
+        
+        int n_out = n / 2 + 1;
+        for (int i = 0; i < n_out; ++i) {
+            output[i] = buffer[i];
+        }
     }
 }
 
@@ -128,25 +145,37 @@ inline void rfft(const float* input, Complex* output, int n) {
  * @param input Complex input array of size n/2+1
  * @param output Real output array of size n
  * @param n_out Size of output (must be power of 2)
+ * @param buffer Temporary buffer of size n_out (optional)
  */
-inline void irfft(const Complex* input, float* output, int n_out) {
+inline void irfft(const Complex* input, float* output, int n_out, std::vector<Complex>* buffer_ptr = nullptr) {
     int n_freq = n_out / 2 + 1;
     
-    // Reconstruct full spectrum (conjugate symmetry)
-    std::vector<Complex> buffer(n_out);
-    for (int i = 0; i < n_freq; ++i) {
-        buffer[i] = input[i];
-    }
-    for (int i = n_freq; i < n_out; ++i) {
-        buffer[i] = std::conj(buffer[n_out - i]);
-    }
-    
-    // Compute inverse FFT
-    fft_radix2(buffer.data(), n_out, true);
-    
-    // Extract real part
-    for (int i = 0; i < n_out; ++i) {
-        output[i] = buffer[i].real();
+    if (buffer_ptr) {
+        if (buffer_ptr->size() < static_cast<size_t>(n_out)) buffer_ptr->resize(n_out);
+        for (int i = 0; i < n_freq; ++i) {
+            (*buffer_ptr)[i] = input[i];
+        }
+         for (int i = n_freq; i < n_out; ++i) {
+            (*buffer_ptr)[i] = std::conj((*buffer_ptr)[n_out - i]);
+        }
+        fft_radix2(buffer_ptr->data(), n_out, true);
+        for (int i = 0; i < n_out; ++i) {
+            output[i] = (*buffer_ptr)[i].real();
+        }
+    } else {
+        std::vector<Complex> buffer(n_out);
+        for (int i = 0; i < n_freq; ++i) {
+            buffer[i] = input[i];
+        }
+        for (int i = n_freq; i < n_out; ++i) {
+            buffer[i] = std::conj(buffer[n_out - i]);
+        }
+        
+        fft_radix2(buffer.data(), n_out, true);
+        
+        for (int i = 0; i < n_out; ++i) {
+            output[i] = buffer[i].real();
+        }
     }
 }
 
@@ -224,42 +253,42 @@ inline void compute_stft(
         std::memcpy(window_padded.data(), window, n_fft * sizeof(float));
     }
     
-    // Buffers
-    std::vector<float> frame(n_fft);
-    std::vector<Complex> fft_out(n_freq);
+    // Pre-allocate thread-local buffers
+    int max_threads = 1;
+    #ifdef USE_OPENMP
+    max_threads = omp_get_max_threads();
+    #endif
+    
+    std::vector<std::vector<float>> thread_frames(max_threads, std::vector<float>(n_fft));
+    std::vector<std::vector<Complex>> thread_fft_outs(max_threads, std::vector<Complex>(n_freq));
+    std::vector<std::vector<Complex>> thread_fft_buffers(max_threads, std::vector<Complex>(n_fft));
     
     // Process each frame
     #ifdef USE_OPENMP
     #pragma omp parallel for
     #endif
     for (int f = 0; f < n_frames; ++f) {
+        int tid = 0;
+        #ifdef USE_OPENMP
+        tid = omp_get_thread_num();
+        #endif
+        
+        std::vector<float>& frame = thread_frames[tid];
+        
         int start = f * hop_length;
-        
-        // Extract and window frame
-        // Need private buffer for frame and fft_out if logical threads share memory?
-        // Wait, std::vector inside loop is local to block, so essentially thread-private?
-        // YES. Variables declared inside the loop are private to the iteration/thread.
-        
-        // However, we need to be careful about allocating vectors inside a loop in parallel (heap contention).
-        // It's better to allocate buffers per thread or use raw arrays.
-        // For simplicity and since n_fft is small (2048), stack array or thread_local vector is better.
-        // But std::vector inside parallel for is safe but might allocate.
-        // n_fft=2048 float is 8KB. 
-        std::vector<float> frame(n_fft); // Allocation!
-        std::vector<Complex> fft_out(n_freq);
         
         for (int i = 0; i < n_fft; ++i) {
             frame[i] = padded[start + i] * window_padded[i];
         }
         
-        // Compute FFT
-        rfft(frame.data(), fft_out.data(), n_fft);
+        // Compute FFT using pre-allocated buffers
+        rfft(frame.data(), thread_fft_outs[tid].data(), n_fft, &thread_fft_buffers[tid]);
         
         // Store in output [n_freq, n_frames, 2] format
         for (int k = 0; k < n_freq; ++k) {
             // Note: Output layout is [Freq, Time, 2]
-            output[(k * n_frames + f) * 2 + 0] = fft_out[k].real();
-            output[(k * n_frames + f) * 2 + 1] = fft_out[k].imag();
+            output[(k * n_frames + f) * 2 + 0] = thread_fft_outs[tid][k].real();
+            output[(k * n_frames + f) * 2 + 1] = thread_fft_outs[tid][k].imag();
         }
     }
 }
@@ -304,24 +333,30 @@ inline void compute_istft(
         std::memcpy(window_padded.data(), window, n_fft * sizeof(float));
     }
     
-    // Overlap-add buffers
-    // This is tricky for parallelization: race condition on y (overlap-add).
-    // We CANNOT parallelize the write to 'y' easily without atomic float add (slow/hard) or reduction.
-    // APPROACH:
-    // 1. Parallel IFFT: Compute all frames' time-domain signals into a large buffer [n_frames, n_fft].
-    // 2. Serial Overlap-Add: Add them up. (Overlap-add is O(N_Frames * N_FFT), same complexity, but memory bound).
-    // Serial part might be fast enough if FFT is the heavy lifter.
-    // FFT is O(N log N). Overlap add is O(N). FFT dominates.
-    
     // Step 1: Compute all IFFTs in parallel
     std::vector<float> frames_time_domain(n_frames * n_fft);
+    
+    // Pre-allocate thread-local buffers
+    int max_threads = 1;
+    #ifdef USE_OPENMP
+    max_threads = omp_get_max_threads();
+    #endif
+    
+    std::vector<std::vector<Complex>> thread_fft_ins(max_threads, std::vector<Complex>(n_freq));
+    std::vector<std::vector<float>> thread_frame_outs(max_threads, std::vector<float>(n_fft));
+    std::vector<std::vector<Complex>> thread_fft_buffers(max_threads, std::vector<Complex>(n_fft));
     
     #ifdef USE_OPENMP
     #pragma omp parallel for
     #endif
     for (int f = 0; f < n_frames; ++f) {
-        std::vector<Complex> fft_in(n_freq);
-        std::vector<float> frame_out(n_fft);
+        int tid = 0;
+        #ifdef USE_OPENMP
+        tid = omp_get_thread_num();
+        #endif
+        
+        std::vector<Complex>& fft_in = thread_fft_ins[tid];
+        std::vector<float>& frame_out = thread_frame_outs[tid];
         
         // Extract complex spectrum
         for (int k = 0; k < n_freq; ++k) {
@@ -331,7 +366,7 @@ inline void compute_istft(
         }
         
         // IFFT
-        irfft(fft_in.data(), frame_out.data(), n_fft);
+        irfft(fft_in.data(), frame_out.data(), n_fft, &thread_fft_buffers[tid]);
         
         // Store
         std::memcpy(&frames_time_domain[f * n_fft], frame_out.data(), n_fft * sizeof(float));

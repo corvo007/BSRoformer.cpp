@@ -58,16 +58,16 @@ void BSRoformer::LoadWeights(const std::string& path) {
     
     // Normalization for legacy models (if any) or simplified internal handling
     if (architecture_ == "bs") architecture_ = "bs_roformer";
-    if (architecture_ == "mel_band") architecture_ = "bs_roformer";
+    if (architecture_ == "mel_band") architecture_ = "mel_band_roformer";
 
-    std::string kp = architecture_ + "."; // key prefix, e.g. "bs_roformer." or "bs_roformer."
+    std::string kp = architecture_ + "."; // key prefix, e.g. "bs_roformer." or "mel_band_roformer."
 
     // Set internal flags based on architecture
     if (architecture_ == "bs_roformer") {
         has_final_norm_ = true;
         transformer_norm_output_ = false;
     } else {
-        // bs_roformer
+        // mel_band_roformer
         has_final_norm_ = false;
         transformer_norm_output_ = true;
     }
@@ -201,7 +201,8 @@ void BSRoformer::LoadWeights(const std::string& path) {
     // Dynamic MLP detection
     // Try to find mask_est.0.freq.0.mlp.{N}.weight
     mlp_num_layers_ = 0;
-    for (int idx = 0; idx <= 20; idx += 2) {  // Check indices 0, 2, 4... up to 10 layers
+    const int MAX_MLP_LAYERS = 20;
+    for (int idx = 0; idx <= MAX_MLP_LAYERS; idx += 2) {  // Check indices 0, 2, 4... up to MAX
         std::string probe = "mask_est.0.freq.0.mlp." + std::to_string(idx) + ".weight";
         if (GetWeight(probe) != nullptr) {
             mlp_num_layers_++;

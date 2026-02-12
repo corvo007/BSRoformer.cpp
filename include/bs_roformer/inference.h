@@ -62,6 +62,10 @@ private:
     struct ggml_tensor* pos_freq_ = nullptr;
     struct ggml_tensor* mask_out_tensor_ = nullptr;
 
+    // Cached Host Data (to avoid reallocation)
+    std::vector<int32_t> pos_time_data_;
+    std::vector<int32_t> pos_freq_data_;
+
     // Current config state
     int cached_n_frames_ = -1;
 
