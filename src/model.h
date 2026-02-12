@@ -52,6 +52,12 @@ public:
     bool GetSTFTNormalized() const { return stft_normalized_; }
     int GetZeroDC() const { return zero_dc_; }
     int GetSampleRate() const { return sample_rate_; }
+    int GetMlpExpansionFactor() const { return mlp_expansion_factor_; }
+    
+    // BS Roformer Support
+    const std::string& GetArchitecture() const { return architecture_; }
+    bool HasFinalNorm() const { return has_final_norm_; }
+    bool GetTransformerNormOutput() const { return transformer_norm_output_; }
     
     // Inference defaults (from GGUF, can be overridden at runtime)
     int GetDefaultChunkSize() const { return default_chunk_size_; }
@@ -143,6 +149,13 @@ private:
     bool stft_normalized_ = false;
     bool zero_dc_ = false;
     int mask_estimator_depth_ = 1;
+    int mlp_expansion_factor_ = 4;
+    
+    // BS Roformer Specific
+    std::string architecture_ = "mel_band";  // "mel_band" or "bs"
+    bool has_final_norm_ = false;            // BS has a global final norm
+    bool transformer_norm_output_ = true;    // MelBand=true, BS=false
+    int mlp_num_layers_ = 3;                 // Detected from weights (BS=2 for depth=2)
     int sample_rate_ = 44100;
 
     // Inference defaults

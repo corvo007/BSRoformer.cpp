@@ -46,54 +46,82 @@ void MelBandRoformer::LoadWeights(const std::string& path) {
         throw std::runtime_error("Failed to load GGUF file: " + path);
     }
 
-    // 1. Read Hyperparameters
-    int kv_idx;
+    // 1. Read Architecture first to determine key prefix
+    int kv_idx = gguf_find_key(ctx_gguf, "general.architecture");
+    if (kv_idx >= 0) {
+        architecture_ = gguf_get_val_str(ctx_gguf, kv_idx);
+    } else {
+        throw std::runtime_error("Key 'general.architecture' not found in GGUF file. Please re-convert the model with the latest script.");
+    }
     
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.stft_n_fft");
+    std::cout << "Architecture: " << architecture_ << std::endl;
+    
+    // Normalization for legacy models (if any) or simplified internal handling
+    if (architecture_ == "bs") architecture_ = "bs_roformer";
+    if (architecture_ == "mel_band") architecture_ = "mel_band_roformer";
+
+    std::string kp = architecture_ + "."; // key prefix, e.g. "bs_roformer." or "mel_band_roformer."
+
+    // Set internal flags based on architecture
+    if (architecture_ == "bs_roformer") {
+        has_final_norm_ = true;
+        transformer_norm_output_ = false;
+    } else {
+        // mel_band_roformer
+        has_final_norm_ = false;
+        transformer_norm_output_ = true;
+    }
+
+    // 2. Read Hyperparameters using key prefix
+    
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "stft_n_fft").c_str());
     if (kv_idx >= 0) n_fft_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
     
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.stft_hop_length");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "stft_hop_length").c_str());
     if (kv_idx >= 0) hop_length_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
     
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.stft_win_length");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "stft_win_length").c_str());
     if (kv_idx >= 0) win_length_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.dim");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "dim").c_str());
     if (kv_idx >= 0) dim_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.num_bands");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "num_bands").c_str());
     if (kv_idx >= 0) num_bands_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
     
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.depth");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "depth").c_str());
     if (kv_idx >= 0) depth_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
     // New Parameters
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.num_stems");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "num_stems").c_str());
     if (kv_idx >= 0) num_stems_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
     
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.skip_connection");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "skip_connection").c_str());
     if (kv_idx >= 0) skip_connection_ = gguf_get_val_bool(ctx_gguf, kv_idx);
 
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.stft_normalized");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "stft_normalized").c_str());
     if (kv_idx >= 0) stft_normalized_ = gguf_get_val_bool(ctx_gguf, kv_idx);
 
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.zero_dc");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "zero_dc").c_str());
     if (kv_idx >= 0) zero_dc_ = gguf_get_val_bool(ctx_gguf, kv_idx);
 
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.mask_estimator_depth");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "mask_estimator_depth").c_str());
     if (kv_idx >= 0) mask_estimator_depth_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.sample_rate");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "mlp_expansion_factor").c_str());
+    if (kv_idx >= 0) mlp_expansion_factor_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
+
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "sample_rate").c_str());
     if (kv_idx >= 0) sample_rate_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
     
     // Inference defaults (optional, fallback to hardcoded values)
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.default_chunk_size");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "default_chunk_size").c_str());
     if (kv_idx >= 0) default_chunk_size_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
     
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.default_num_overlap");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "default_num_overlap").c_str());
     if (kv_idx >= 0) default_num_overlap_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
     
-    kv_idx = gguf_find_key(ctx_gguf, "mel_band_roformer.linear_transformer_depth");
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "linear_transformer_depth").c_str());
     if (kv_idx >= 0) {
         int lin_depth = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
         if (lin_depth > 0) {
@@ -107,7 +135,6 @@ void MelBandRoformer::LoadWeights(const std::string& path) {
               << ", num_stems=" << num_stems_ << ", skip_conn=" << skip_connection_ << std::endl;
     std::cout << "Inference Defaults: chunk_size=" << default_chunk_size_ 
               << ", num_overlap=" << default_num_overlap_ << std::endl;
-
 
     // 2. Allocate backend buffer for ALL tensors
     buffer_weights_ = ggml_backend_alloc_ctx_tensors_from_buft(
@@ -171,6 +198,19 @@ void MelBandRoformer::LoadWeights(const std::string& path) {
     int n_tensors = gguf_get_n_tensors(ctx_gguf);
     std::cout << "Loaded " << n_tensors << " tensors" << std::endl;
     
+    // Dynamic MLP detection
+    // Try to find mask_est.0.freq.0.mlp.{N}.weight
+    mlp_num_layers_ = 0;
+    for (int idx = 0; idx <= 20; idx += 2) {  // Check indices 0, 2, 4... up to 10 layers
+        std::string probe = "mask_est.0.freq.0.mlp." + std::to_string(idx) + ".weight";
+        if (GetWeight(probe) != nullptr) {
+            mlp_num_layers_++;
+        } else {
+            break;
+        }
+    }
+    std::cout << "Detected MLP layers: " << mlp_num_layers_ << std::endl;
+
     gguf_free(ctx_gguf);
 }
 
@@ -188,6 +228,12 @@ std::vector<int> MelBandRoformer::GetDimInputs() const {
 }
 
 int MelBandRoformer::GetTotalDimInput() const {
+    if (architecture_ == "bs") {
+        // BS: All frequencies * stereo * complex
+        int n_freq = n_fft_ / 2 + 1;
+        return n_freq * 2 * 2;  // freq * stereo * complex
+    }
+
     int total = 0;
     for (int i = 0; i < num_bands_; ++i) {
         total += num_freqs_per_band_[i] * 4;
@@ -432,13 +478,15 @@ ggml_tensor* MelBandRoformer::BuildTransformersGraph(
 
         
         // Time Transformer Final Norm
-        // blk.{l}.time_norm.weight
-        std::string time_norm_name = "blk." + std::to_string(layer) + ".time_norm.weight";
-        ggml_tensor* time_norm_w = GetWeight(time_norm_name);
-        if (!time_norm_w) { std::cerr << "Missing: " << time_norm_name << "\n"; return nullptr; }
-        
-        x_packed = ggml_rms_norm(ctx, x_packed, 1e-12f);
-        x_packed = ggml_mul(ctx, x_packed, time_norm_w);
+        // Only if transformer_norm_output_ is true (MelBand)
+        if (transformer_norm_output_) {
+            std::string time_norm_name = "blk." + std::to_string(layer) + ".time_norm.weight";
+            ggml_tensor* time_norm_w = GetWeight(time_norm_name);
+            if (!time_norm_w) { std::cerr << "Missing: " << time_norm_name << "\n"; return nullptr; }
+            
+            x_packed = ggml_rms_norm(ctx, x_packed, 1e-12f);
+            x_packed = ggml_mul(ctx, x_packed, time_norm_w);
+        }
         
         x = ggml_reshape_4d(ctx, x_packed, D, T, F, B);
         x = ggml_permute(ctx, x, 0, 2, 1, 3);
@@ -597,19 +645,29 @@ ggml_tensor* MelBandRoformer::BuildTransformersGraph(
         x_freq_packed = ggml_add(ctx, f_x_resid1, f_ff_block_out);
         
         // Freq Transformer Final Norm
-        // blk.{l}.freq_norm.weight
-        std::string freq_norm_name = "blk." + std::to_string(layer) + ".freq_norm.weight";
-        ggml_tensor* freq_norm_w = GetWeight(freq_norm_name);
-        if (!freq_norm_w) { std::cerr << "Missing: " << freq_norm_name << "\n"; return nullptr; }
-        
-        x_freq_packed = ggml_rms_norm(ctx, x_freq_packed, 1e-12f);
-        x_freq_packed = ggml_mul(ctx, x_freq_packed, freq_norm_w);
+        // Only if transformer_norm_output_ is true (MelBand)
+        if (transformer_norm_output_) {
+            std::string freq_norm_name = "blk." + std::to_string(layer) + ".freq_norm.weight";
+            ggml_tensor* freq_norm_w = GetWeight(freq_norm_name);
+            if (!freq_norm_w) { std::cerr << "Missing: " << freq_norm_name << "\n"; return nullptr; }
+            
+            x_freq_packed = ggml_rms_norm(ctx, x_freq_packed, 1e-12f);
+            x_freq_packed = ggml_mul(ctx, x_freq_packed, freq_norm_w);
+        }
         
         x = ggml_reshape_4d(ctx, x_freq_packed, D, F, T, B);
         
         if (skip_connection_) {
             skip_outputs.push_back(x);
         }
+    }
+    
+    // Global Final Norm (BS Roformer only)
+    if (has_final_norm_) {
+        ggml_tensor* final_norm_w = GetWeight("final_norm.weight");
+        if (!final_norm_w) { std::cerr << "Missing: final_norm.weight\n"; return nullptr; }
+        x = ggml_rms_norm(ctx, x, 1e-12f);
+        x = ggml_mul(ctx, x, final_norm_w);
     }
     
     return x;
@@ -631,19 +689,22 @@ ggml_tensor* MelBandRoformer::BuildMaskEstimatorGraph(
     const int NUM_STEMS = num_stems_;
     
     // Calculate band_out_dims from mask_est.0.freq.{b}.mlp.4.weight shape
+    // Calculate band_out_dims from last MLP weight
     std::vector<int> band_out_dims(NUM_BANDS);
     int total_out_dim = 0;
+    
+    // Last MLP layer index is (mlp_num_layers_ - 1) * 2
+    int last_mlp_idx = (mlp_num_layers_ - 1) * 2;
 
     for (int b = 0; b < NUM_BANDS; ++b) {
-        // mask_est.0.freq.{b}.mlp.4.weight
-        // Assuming all stems have same architecture, check stem 0
-        std::string w4_name = "mask_est.0.freq." + std::to_string(b) + ".mlp.4.weight";
-        ggml_tensor* w4 = GetWeight(w4_name);
-        if (!w4) {
-            std::cerr << "Missing weight for dim check: " << w4_name << std::endl;
+        // mask_est.0.freq.{b}.mlp.{last}.weight
+        std::string w_last_name = "mask_est.0.freq." + std::to_string(b) + ".mlp." + std::to_string(last_mlp_idx) + ".weight";
+        ggml_tensor* w_last = GetWeight(w_last_name);
+        if (!w_last) {
+            std::cerr << "Missing weight for dim check: " << w_last_name << std::endl;
             return nullptr;
         }
-        band_out_dims[b] = static_cast<int>(w4->ne[1]) / 2;  // GLU halves the dimension
+        band_out_dims[b] = static_cast<int>(w_last->ne[1]) / 2;  // GLU halves the dimension
         total_out_dim += band_out_dims[b];
     }
     
@@ -671,38 +732,41 @@ ggml_tensor* MelBandRoformer::BuildMaskEstimatorGraph(
             std::string prefix = "mask_est." + std::to_string(s) + ".freq." + std::to_string(b) + ".mlp.";
             
             // MLP Layer 0
-            ggml_tensor* w0 = GetWeight(prefix + "0.weight");
-            ggml_tensor* bias0 = GetWeight(prefix + "0.bias");
-            if (!w0 || !bias0) { std::cerr << "Missing mask weights s=" << s << " b=" << b << "\n"; return nullptr; }
-            
-            ggml_tensor* layer0 = ggml_mul_mat(ctx, w0, band_in);
-            layer0 = ggml_add(ctx, layer0, bias0);
-            layer0 = ggml_tanh(ctx, layer0);
-            
-            // MLP Layer 2
-            ggml_tensor* w2 = GetWeight(prefix + "2.weight");
-            ggml_tensor* bias2 = GetWeight(prefix + "2.bias");
-            
-            ggml_tensor* layer2 = ggml_mul_mat(ctx, w2, layer0);
-            layer2 = ggml_add(ctx, layer2, bias2);
-            layer2 = ggml_tanh(ctx, layer2);
-            
-            // MLP Layer 4
-            ggml_tensor* w4 = GetWeight(prefix + "4.weight");
-            ggml_tensor* bias4 = GetWeight(prefix + "4.bias");
-            
-            ggml_tensor* mlp_out = ggml_mul_mat(ctx, w4, layer2);
-            mlp_out = ggml_add(ctx, mlp_out, bias4);
+            // Dynamic MLP Construction
+            ggml_tensor* mlp_current = band_in;
+
+            for (int layer_idx = 0; layer_idx < mlp_num_layers_; ++layer_idx) {
+                int seq_idx = layer_idx * 2; // 0, 2, 4...
+                
+                std::string w_name = prefix + std::to_string(seq_idx) + ".weight";
+                std::string b_name = prefix + std::to_string(seq_idx) + ".bias";
+                
+                ggml_tensor* w = GetWeight(w_name);
+                ggml_tensor* b = GetWeight(b_name);
+                
+                if (!w || !b) {
+                    std::cerr << "Missing mask weights s=" << s << " b=" << b << " l=" << seq_idx << "\n";
+                    return nullptr;
+                }
+                
+                mlp_current = ggml_mul_mat(ctx, w, mlp_current);
+                mlp_current = ggml_add(ctx, mlp_current, b);
+                
+                // Activation (Tanh) for all but last layer
+                if (layer_idx < mlp_num_layers_ - 1) {
+                    mlp_current = ggml_tanh(ctx, mlp_current);
+                }
+            }
             
             // GLU
             int dim_out = band_out_dims[b];
             
-            ggml_tensor* glu_a = ggml_view_3d(ctx, mlp_out,
+            ggml_tensor* glu_a = ggml_view_3d(ctx, mlp_current,
                                               dim_out, n_frames, batch,
-                                              mlp_out->nb[1], mlp_out->nb[2], 0);
-            ggml_tensor* glu_b = ggml_view_3d(ctx, mlp_out,
+                                              mlp_current->nb[1], mlp_current->nb[2], 0);
+            ggml_tensor* glu_b = ggml_view_3d(ctx, mlp_current,
                                               dim_out, n_frames, batch,
-                                              mlp_out->nb[1], mlp_out->nb[2],
+                                              mlp_current->nb[1], mlp_current->nb[2],
                                               dim_out * sizeof(float));
             
             glu_a = ggml_cont(ctx, glu_a);

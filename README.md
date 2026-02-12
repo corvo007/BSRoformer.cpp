@@ -6,11 +6,12 @@ High-performance C++ inference implementation for the Mel-Band-Roformer audio so
 
 ## 📖 Introduction
 
-This project is a pure C++ inference engine for the Mel-Band-Roformer audio source separation model, built on the [GGML](https://github.com/ggerganov/ggml) tensor library. It theoretically supports most Mel-Band-Roformer models and is primarily used for extracting vocals or accompaniment from music.
+This project is a pure C++ inference engine for the **Mel-Band-Roformer** and **BS Roformer** audio source separation models, built on the [GGML](https://github.com/ggerganov/ggml) tensor library. It primarily used for extracting vocals or accompaniment from music.
 
 ### ✨ Key Features
 
 - 🚀 **High-Performance Inference**: Supports CPU/GPU (CUDA, Vulkan) acceleration
+- 🏗️ **Multi-Architecture**: Support for both **Mel-Band Roformer** and **BS Roformer**
 - 📦 **GGUF Model Format**: Unified model file format for easy distribution
 - 🎚️ **Multiple Quantization Support**: FP32/FP16/Q8_0/Q4_0/Q4_1/Q5_0/Q5_1
 - 🔧 **Easy Deployment**: Only requires executable and GGML library
@@ -132,6 +133,9 @@ python scripts/convert_to_gguf.py \
     --config config.yaml \
     --out model.gguf \
     --dtype q8_0
+
+# For BS Roformer (optional, usually auto-detected)
+python scripts/convert_to_gguf.py ... --arch bs
 ```
 
 ### Supported Quantization Types

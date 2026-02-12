@@ -6,11 +6,12 @@ Mel-Band-Roformer 音频源分离模型的高性能 C++ 推理实现。
 
 ## 📖 简介
 
-本项目是 Mel-Band-Roformer 音频源分离模型的纯 C++ 推理引擎，基于 [GGML](https://github.com/ggerganov/ggml) 张量库构建。理论上支持大部分 Mel-Band-Roformer 模型，主要用于从音乐中提取人声或伴奏。
+本项目是 **Mel-Band-Roformer** 和 **BS Roformer** 音频源分离模型的纯 C++ 推理引擎，基于 [GGML](https://github.com/ggerganov/ggml) 张量库构建。主要用于从音乐中提取人声或伴奏。
 
 ### ✨ 主要特性
 
 - 🚀 **高性能推理**：支持 CPU/GPU (CUDA、Vulkan) 加速
+- 🏗️ **多架构支持**：同时支持 **Mel-Band Roformer** 和 **BS Roformer**
 - 📦 **GGUF 模型格式**：统一的模型文件格式，易于分发
 - 🎚️ **多种量化支持**：FP32/FP16/Q8_0/Q4_0/Q4_1/Q5_0/Q5_1
 - 🔧 **易于部署**：仅需可执行文件和 GGML 库
@@ -132,6 +133,9 @@ python scripts/convert_to_gguf.py \
     --config config.yaml \
     --out model.gguf \
     --dtype q8_0
+
+# 转换 BS Roformer (可选，通常可自动检测)
+python scripts/convert_to_gguf.py ... --arch bs
 ```
 
 ### 支持的量化类型

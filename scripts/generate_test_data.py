@@ -37,6 +37,7 @@ from einops import rearrange, pack, unpack
 # Model imports are deferred until we know the model-repo path
 # Model imports are deferred until we know the model-repo path
 MelBandRoformer = None
+BSRoformer = None
 pack_one = None
 unpack_one = None
 # Inference utility
@@ -59,7 +60,7 @@ class MockModel(torch.nn.Module):
 
 def load_model_module(model_repo_path: Path):
     """Dynamically load the MelBandRoformer model from the specified repository."""
-    global MelBandRoformer, pack_one, unpack_one, inference_func
+    global MelBandRoformer, BSRoformer, pack_one, unpack_one, inference_func
 
     if not model_repo_path.exists():
         print("\n" + "=" * 70)
@@ -106,6 +107,13 @@ def load_model_module(model_repo_path: Path):
         pack_one = _pack_one
         unpack_one = _unpack_one
         MelBandRoformer = _MelBandRoformer
+
+        try:
+            from models.bs_roformer.bs_roformer import BSRoformer as _BSRoformer
+
+            BSRoformer = _BSRoformer
+        except ImportError:
+            print("  Warning: Could not import BSRoformer from model repo.")
 
         # Import demix from utils.model_utils
         from utils.model_utils import demix
@@ -226,8 +234,27 @@ def generate_test_data(
     with open(config_file) as f:
         config = ConfigDict(yaml.load(f, Loader=yaml.FullLoader))
 
-    model = MelBandRoformer(**dict(config.model))
+    model_type = "mel_band"
+    if "freqs_per_bands" in config.model:
+        model_type = "bs"
+        if BSRoformer is None:
+            print(
+                "Error: BSRoformer class not loaded but config looks like BS Roformer."
+            )
+            return 1
+        model = BSRoformer(**dict(config.model))
+        print(f"  Architecture: Band Split Roformer")
+    else:
+        model = MelBandRoformer(**dict(config.model))
+        print(f"  Architecture: Mel-Band Roformer")
+
     state_dict = torch.load(checkpoint, map_location="cpu")
+    # Handle checkpoint structure
+    if "state_dict" in state_dict:
+        state_dict = state_dict["state_dict"]
+    elif "model" in state_dict:
+        state_dict = state_dict["model"]
+
     model.load_state_dict(state_dict)
     model.eval()
 
@@ -261,7 +288,7 @@ def generate_test_data(
             raw_audio = rearrange(raw_audio, "b t -> b 1 t")
 
         batch, channels, raw_audio_length = raw_audio.shape
-        istft_length = raw_audio_length if model.match_input_audio_length else None
+        istft_length = raw_audio_length
 
         # STFT
         raw_audio_packed, batch_audio_channel_packed_shape = pack_one(raw_audio, "* t")
@@ -277,9 +304,17 @@ def generate_test_data(
         stft_repr = rearrange(stft_repr, "b s f t c -> b (f s) t c")
 
         # Frequency indexing
-        batch_arange = torch.arange(batch, device=device)[..., None]
-        x = stft_repr[batch_arange, model.freq_indices]
-        x = rearrange(x, "b f t c -> b t (f c)")
+        if model_type == "mel_band":
+            batch_arange = torch.arange(batch, device=device)[..., None]
+            x = stft_repr[batch_arange, model.freq_indices]
+            x = rearrange(x, "b f t c -> b t (f c)")
+        else:
+            # BS Roformer: Direct usage
+            x = stft_repr
+            # If stft_repr is complex (view_as_real result: [b, f, t, 2])
+            # BS model expects: [b, f, t, 2] -> rearrange to [b, t, (f * 2)]
+            # Wait, bs_roformer.py: x = rearrange(x, 'b f t c -> b t (f c)')
+            x = rearrange(x, "b f t c -> b t (f c)")
 
         # ===== CAPTURE: BandSplit Input =====
         captured["band_split_in"] = x.clone()
@@ -304,6 +339,10 @@ def generate_test_data(
             x = freq_transformer(x)
             (x,) = unpack(x, ps, "* f d")
 
+        # BS Roformer: Apply global final_norm after all transformer layers
+        if model_type == "bs" and hasattr(model, "final_norm"):
+            x = model.final_norm(x)
+
         # ===== CAPTURE: Before Mask Estimator (= Transformer Output) =====
         captured["before_mask_est"] = x.clone()
 
@@ -325,27 +364,52 @@ def generate_test_data(
 
         from einops import repeat
 
-        scatter_indices = repeat(
-            model.freq_indices,
-            "f -> b n f t",
-            b=batch,
-            n=num_stems,
-            t=stft_repr.shape[-1],
-        )
-        stft_repr_expanded_stems = repeat(stft_repr, "b 1 ... -> b n ...", n=num_stems)
-        masks_summed = torch.zeros_like(stft_repr_expanded_stems).scatter_add_(
-            2, scatter_indices, masks
-        )
+        if model_type == "mel_band":
+            scatter_indices = repeat(
+                model.freq_indices,
+                "f -> b n f t",
+                b=batch,
+                n=num_stems,
+                t=stft_repr.shape[-1],
+            )
+            stft_repr_expanded_stems = repeat(
+                stft_repr, "b 1 ... -> b n ...", n=num_stems
+            )
+            masks_summed = torch.zeros_like(stft_repr_expanded_stems).scatter_add_(
+                2, scatter_indices, masks
+            )
 
-        denom = repeat(model.num_bands_per_freq, "f -> (f r) 1", r=channels)
-        masks_averaged = masks_summed / denom.clamp(min=1e-8)
+            denom = repeat(model.num_bands_per_freq, "f -> (f r) 1", r=channels)
+            masks_averaged = masks_summed / denom.clamp(min=1e-8)
 
-        stft_repr = stft_repr * masks_averaged
+            stft_repr = stft_repr * masks_averaged
+
+        else:
+            # BS Roformer: Direct mask application
+            # masks shape: [b, n, f, t, c] (rearranged above)
+            # stft_repr shape: [b, 1, f, t, c] (rearranged above)
+
+            # BS model output masks are often [b, n, f, t] (complex/real?)
+            # Wait, bs_roformer.py:
+            # masks = torch.stack([fn(x) for fn in self.mask_estimators], dim=1)
+            # masks = rearrange(masks, 'b n t (f c) -> b n f t c', c = 2)
+            # x = x * masks.sum(dim=1) # summation over stems? No, output separate stems.
+            # return x * masks
+
+            # So here: stft_repr * masks is correct.
+            stft_repr = stft_repr * masks
 
         # ISTFT
-        stft_repr = rearrange(
-            stft_repr, "b n (f s) t -> (b n s) f t", s=model.audio_channels
-        )
+        if model_type == "mel_band":
+            stft_repr = rearrange(
+                stft_repr, "b n (f s) t -> (b n s) f t", s=model.audio_channels
+            )
+        else:
+            # BS Roformer: stft_repr is [b, n, (Freq*Stereo), t] (complex)
+            # Unpack stereo and flatten batch/stems/stereo for istft
+            stft_repr = rearrange(
+                stft_repr, "b n (f s) t -> (b n s) f t", s=model.audio_channels
+            )
 
         if getattr(model, "zero_dc", False):
             # Zero out DC component

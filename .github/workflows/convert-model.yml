@@ -24,13 +24,17 @@ on:
         description: '要转换的量化类型 (用逗号分隔, 留空则转换全部)'
         required: false
         type: string
-        default: 'fp32,fp16,q8_0,q4_0,q4_1,q5_0,q5_1'
+        default: ''
       gguf_name:
         description: 'GGUF 元数据中的模型名称 (可选, 默认: Mel-Band-Roformer Separator)'
         required: false
         type: string
       gguf_description:
         description: 'GGUF 元数据中的模型描述 (可选, 默认: Music source separation model)'
+        required: false
+        type: string
+      architecture:
+        description: '模型架构类型 (可选, 例如: bs_roformer, mel_band_roformer)'
         required: false
         type: string
 
@@ -109,6 +113,7 @@ jobs:
           GGUF_NAME="${{ inputs.gguf_name }}"
           GGUF_DESC="${{ inputs.gguf_description }}"
           QUANT_TYPES="${{ inputs.quantization_types }}"
+          ARCH="${{ inputs.architecture }}"
           
           # If no types specified, use all supported types
           if [ -z "$QUANT_TYPES" ]; then
@@ -138,6 +143,7 @@ jobs:
             CMD="python scripts/convert_to_gguf.py --ckpt \"$CHECKPOINT\" --config \"$CONFIG\" --out \"$OUTPUT_FILE\" --dtype \"$qtype\""
             [ -n "$GGUF_NAME" ] && CMD="$CMD --name \"$GGUF_NAME\""
             [ -n "$GGUF_DESC" ] && CMD="$CMD --description \"$GGUF_DESC\""
+            [ -n "$ARCH" ]      && CMD="$CMD --arch \"$ARCH\""
             
             eval $CMD
               

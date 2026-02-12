@@ -18,10 +18,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # HuggingFace model info
-  HF_MODEL_REPO: GaboxR67/MelBandRoformers
-  HF_CHECKPOINT_PATH: melbandroformers/vocals/voc_fv6.ckpt
-  HF_CONFIG_PATH: melbandroformers/vocals/voc_gabox.yaml
+  # HuggingFace model info (Mel-Band)
+  HF_MB_REPO: GaboxR67/MelBandRoformers
+  HF_MB_CHECKPOINT: melbandroformers/vocals/voc_fv6.ckpt
+  HF_MB_CONFIG: melbandroformers/vocals/voc_gabox.yaml
+  # BS Roformer model info
+  HF_BS_REPO: anvuew/BS-RoFormer
+  HF_BS_CHECKPOINT: bs_roformer_anvuew_sdr_12.45.ckpt
+  HF_BS_CONFIG: config.yaml
   # Music-Source-Separation-Training repo
   MSST_REPO: https://github.com/ZFTurbo/Music-Source-Separation-Training.git
   # Enable sccache GitHub Actions cache
@@ -59,10 +63,17 @@ jobs:
           from huggingface_hub import hf_hub_download
           import os
           token = os.environ.get('HF_TOKEN') or None
-          hf_hub_download('${{ env.HF_MODEL_REPO }}', '${{ env.HF_CHECKPOINT_PATH }}', 
+          
+          # Download Mel-Band Roformer
+          hf_hub_download('${{ env.HF_MB_REPO }}', '${{ env.HF_MB_CHECKPOINT }}', 
                           local_dir='./model', token=token)
-          hf_hub_download('${{ env.HF_MODEL_REPO }}', '${{ env.HF_CONFIG_PATH }}',
+          hf_hub_download('${{ env.HF_MB_REPO }}', '${{ env.HF_MB_CONFIG }}',
                           local_dir='./model', token=token)
+          # Download BS Roformer
+          hf_hub_download('${{ env.HF_BS_REPO }}', '${{ env.HF_BS_CHECKPOINT }}',
+                          local_dir='./model_bs', token=token)
+          hf_hub_download('${{ env.HF_BS_REPO }}', '${{ env.HF_BS_CONFIG }}',
+                          local_dir='./model_bs', token=token)
           "
           
       - name: Generate Test Audio
@@ -74,17 +85,39 @@ jobs:
           python scripts/generate_test_data.py \
             --model-repo msst \
             --audio test_audio.wav \
-            --checkpoint model/${{ env.HF_CHECKPOINT_PATH }} \
-            --config model/${{ env.HF_CONFIG_PATH }} \
+            --checkpoint model/${{ env.HF_MB_CHECKPOINT }} \
+            --config model/${{ env.HF_MB_CONFIG }} \
             --output test_data
             
-      - name: Convert Model to GGUF
+      - name: Convert Model to GGUF (Mel-Band)
         run: |
           python scripts/convert_to_gguf.py \
-            --ckpt model/${{ env.HF_CHECKPOINT_PATH }} \
-            --config model/${{ env.HF_CONFIG_PATH }} \
+            --ckpt model/${{ env.HF_MB_CHECKPOINT }} \
+            --config model/${{ env.HF_MB_CONFIG }} \
             --out model.gguf \
             --dtype fp32
+            
+      # ----- BS Roformer Setup -----
+      - name: Generate Test Data (BS)
+        run: |
+          # Need to make sure msst is in python path
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/msst
+          # Use real BS model
+          python scripts/generate_test_data.py \
+            --model-repo msst \
+            --audio test_audio.wav \
+            --checkpoint model_bs/${{ env.HF_BS_CHECKPOINT }} \
+            --config model_bs/${{ env.HF_BS_CONFIG }} \
+            --output test_data_bs
+            
+      - name: Convert Model to GGUF (BS)
+        run: |
+          python scripts/convert_to_gguf.py \
+            --ckpt model_bs/${{ env.HF_BS_CHECKPOINT }} \
+            --config model_bs/${{ env.HF_BS_CONFIG }} \
+            --out model_bs.gguf \
+            --dtype fp32 \
+            --arch bs
             
       - name: Upload Test Data Artifact
         uses: actions/upload-artifact@v4
@@ -94,6 +127,8 @@ jobs:
             test_data/
             model.gguf
             test_audio.wav
+            test_data_bs/
+            model_bs.gguf
           retention-days: 1
 
   # ===========================================================================
@@ -218,6 +253,15 @@ jobs:
         env:
           MBR_MODEL_PATH: ${{ github.workspace }}/model.gguf
           MBR_TEST_DATA_DIR: ${{ github.workspace }}/test_data
+          MBR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
+        run: ctest --test-dir build -C Release -V --output-on-failure --timeout 300
+        
+      - name: Run Unit Tests (BS Roformer)
+        if: matrix.test
+        env:
+          MBR_MODEL_PATH: ${{ github.workspace }}/model_bs.gguf
+          MBR_TEST_DATA_DIR: ${{ github.workspace }}/test_data_bs
+          MBR_ARCHITECTURE: bs
           MBR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
         run: ctest --test-dir build -C Release -V --output-on-failure --timeout 300
         
