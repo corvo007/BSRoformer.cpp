@@ -12,7 +12,7 @@ struct ggml_cgraph;
 struct gguf_context;
 
 /**
- * MelBandRoformer Model
+ * BSRoformer Model
  * 
  * This class handles:
  * 1. Loading weights from GGUF file
@@ -21,10 +21,10 @@ struct gguf_context;
  * 
  * Execution is handled by test/inference code using these graphs.
  */
-class MelBandRoformer {
+class BSRoformer {
 public:
-    MelBandRoformer();
-    ~MelBandRoformer();
+    BSRoformer();
+    ~BSRoformer();
 
     // Initialize model from GGUF file
     void Initialize(const std::string& model_path);

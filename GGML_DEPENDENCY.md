@@ -18,7 +18,7 @@ The CMake configuration resolves GGML dependencies in the following priority ord
 
 Clone GGML as submodule:
 ```bash
-cd MelBandRoformer.cpp
+cd BSRoformer.cpp
 git submodule add https://github.com/ggerganov/ggml.git
 git submodule update --init --recursive
 cmake -B build -DGGML_CUDA=ON
@@ -28,7 +28,7 @@ Or use sibling directory:
 ```bash
 cd ..
 git clone https://github.com/ggerganov/ggml.git
-cd MelBandRoformer.cpp
+cd BSRoformer.cpp
 cmake -B build -DGGML_CUDA=ON
 ```
 
@@ -44,8 +44,8 @@ project(MyParentProject)
 # Build whisper.cpp first (includes ggml)
 add_subdirectory(whisper.cpp)
 
-# Build MelBandRoformer - it will reuse whisper.cpp's ggml target
-add_subdirectory(MelBandRoformer.cpp)
+# Build BSRoformer - it will reuse whisper.cpp's ggml target
+add_subdirectory(BSRoformer.cpp)
 ```
 
 Or use explicit path:
@@ -63,7 +63,7 @@ cmake -B build -DGGML_DIR=/custom/path/to/ggml
 
 **Option A: Submodule** (Recommended)
 ```
-MelBandRoformer.cpp/
+BSRoformer.cpp/
 ├── ggml/                    # Git submodule
 ├── src/
 ├── tests/
@@ -74,7 +74,7 @@ MelBandRoformer.cpp/
 ```
 parent/
 ├── ggml/                    # Shared GGML
-├── MelBandRoformer.cpp/
+├── BSRoformer.cpp/
 └── whisper.cpp/             # Also uses ../ggml
 ```
 
@@ -84,7 +84,7 @@ MyProject/
 ├── external/
 │   └── ggml/
 ├── whisper.cpp/
-├── MelBandRoformer.cpp/
+├── BSRoformer.cpp/
 └── CMakeLists.txt          # Defines ggml target
 ```
 

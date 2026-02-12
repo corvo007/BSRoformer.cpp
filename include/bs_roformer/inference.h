@@ -5,7 +5,7 @@
 #include <memory>
 #include <functional>
 // Forward declaration
-class MelBandRoformer;
+class BSRoformer;
 
 // Forward declaration
 namespace ggml { struct context; struct cgraph; }
@@ -49,7 +49,7 @@ private:
                                                   std::function<void(float)> progress_callback);
 
 private:
-    std::unique_ptr<MelBandRoformer> model_;
+    std::unique_ptr<BSRoformer> model_;
     
     // Persistent Graph State
     struct ggml_context* ctx_ = nullptr;

@@ -8,16 +8,16 @@
 #include <cstring>
 #include <cmath>
 
-MelBandRoformer::MelBandRoformer() {
+BSRoformer::BSRoformer() {
 }
 
-MelBandRoformer::~MelBandRoformer() {
+BSRoformer::~BSRoformer() {
     if (buffer_weights_) ggml_backend_buffer_free(buffer_weights_);
     if (backend_) ggml_backend_free(backend_);
     if (ctx_weights_) ggml_free(ctx_weights_);
 }
 
-void MelBandRoformer::Initialize(const std::string& model_path) {
+void BSRoformer::Initialize(const std::string& model_path) {
     // Use best available backend, but allow forcing CPU
     if (std::getenv("MBR_FORCE_CPU")) {
         backend_ = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
@@ -33,7 +33,7 @@ void MelBandRoformer::Initialize(const std::string& model_path) {
     LoadWeights(model_path);
 }
 
-void MelBandRoformer::LoadWeights(const std::string& path) {
+void BSRoformer::LoadWeights(const std::string& path) {
     std::cout << "Loading model from " << path << std::endl;
 
     struct gguf_init_params params = {
@@ -58,16 +58,16 @@ void MelBandRoformer::LoadWeights(const std::string& path) {
     
     // Normalization for legacy models (if any) or simplified internal handling
     if (architecture_ == "bs") architecture_ = "bs_roformer";
-    if (architecture_ == "mel_band") architecture_ = "mel_band_roformer";
+    if (architecture_ == "mel_band") architecture_ = "bs_roformer";
 
-    std::string kp = architecture_ + "."; // key prefix, e.g. "bs_roformer." or "mel_band_roformer."
+    std::string kp = architecture_ + "."; // key prefix, e.g. "bs_roformer." or "bs_roformer."
 
     // Set internal flags based on architecture
     if (architecture_ == "bs_roformer") {
         has_final_norm_ = true;
         transformer_norm_output_ = false;
     } else {
-        // mel_band_roformer
+        // bs_roformer
         has_final_norm_ = false;
         transformer_norm_output_ = true;
     }
@@ -214,11 +214,11 @@ void MelBandRoformer::LoadWeights(const std::string& path) {
     gguf_free(ctx_gguf);
 }
 
-ggml_tensor* MelBandRoformer::GetWeight(const std::string& name) const {
+ggml_tensor* BSRoformer::GetWeight(const std::string& name) const {
     return ggml_get_tensor(ctx_weights_, name.c_str());
 }
 
-std::vector<int> MelBandRoformer::GetDimInputs() const {
+std::vector<int> BSRoformer::GetDimInputs() const {
     std::vector<int> dim_inputs(num_bands_);
     for (int i = 0; i < num_bands_; ++i) {
         int num_freqs = num_freqs_per_band_[i];
@@ -227,7 +227,7 @@ std::vector<int> MelBandRoformer::GetDimInputs() const {
     return dim_inputs;
 }
 
-int MelBandRoformer::GetTotalDimInput() const {
+int BSRoformer::GetTotalDimInput() const {
     if (architecture_ == "bs") {
         // BS: All frequencies * stereo * complex
         int n_freq = n_fft_ / 2 + 1;
@@ -243,7 +243,7 @@ int MelBandRoformer::GetTotalDimInput() const {
 
 // ========== Graph Building Functions ==========
 
-ggml_tensor* MelBandRoformer::BuildBandSplitGraph(
+ggml_tensor* BSRoformer::BuildBandSplitGraph(
     ggml_context* ctx,
     ggml_tensor* input,
     ggml_cgraph* gf,
@@ -311,7 +311,7 @@ ggml_tensor* MelBandRoformer::BuildBandSplitGraph(
     return x;
 }
 
-ggml_tensor* MelBandRoformer::BuildTransformersGraph(
+ggml_tensor* BSRoformer::BuildTransformersGraph(
     ggml_context* ctx,
     ggml_tensor* input,
     ggml_cgraph* gf,
@@ -673,7 +673,7 @@ ggml_tensor* MelBandRoformer::BuildTransformersGraph(
     return x;
 }
 
-ggml_tensor* MelBandRoformer::BuildMaskEstimatorGraph(
+ggml_tensor* BSRoformer::BuildMaskEstimatorGraph(
     ggml_context* ctx,
     ggml_tensor* input,
     ggml_cgraph* gf,

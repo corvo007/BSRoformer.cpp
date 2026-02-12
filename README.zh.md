@@ -1,4 +1,4 @@
-# MelBandRoformer.cpp
+# BSRoformer.cpp
 
 中文 | [English](README.md)
 
@@ -25,12 +25,12 @@ Mel-Band-Roformer 音频源分离模型的高性能 C++ 推理实现。
 ### 下载
 
 - **预构建程序**：在 [Releases](../../releases) 页面下载对应平台的可执行文件
-- **GGUF 模型**：在 [MelBandRoformer-GGUF](https://huggingface.co/chenmozhijin/MelBandRoformer-GGUF) 下载预转换的模型文件
+- **GGUF 模型**：在 [BSRoformer-GGUF](https://huggingface.co/chenmozhijin/BSRoformer-GGUF) 下载预转换的模型文件
 
 ### 命令行使用
 
 ```bash
-./mel_band_roformer-cli <模型.gguf> <输入.wav> <输出.wav> [选项]
+./bs_roformer-cli <模型.gguf> <输入.wav> <输出.wav> [选项]
 
 选项:
   --chunk-size <N>   分块大小（采样点数），默认从模型读取
@@ -49,13 +49,13 @@ Mel-Band-Roformer 音频源分离模型的高性能 C++ 推理实现。
 
 ```bash
 # 基本用法（使用模型默认参数）
-./mel_band_roformer-cli model.gguf song.wav vocals.wav
+./bs_roformer-cli model.gguf song.wav vocals.wav
 
 # 自定义分块参数
-./mel_band_roformer-cli model.gguf song.wav vocals.wav --chunk-size 352800 --overlap 2
+./bs_roformer-cli model.gguf song.wav vocals.wav --chunk-size 352800 --overlap 2
 
 # 高质量模式（增加重叠，减少伪影）
-./mel_band_roformer-cli model.gguf song.wav vocals.wav --overlap 4
+./bs_roformer-cli model.gguf song.wav vocals.wav --overlap 4
 ```
 
 > **注意**：输入音频必须为 **44100 Hz**，支持立体声或单声道（自动扩展）。
@@ -155,8 +155,8 @@ python scripts/convert_to_gguf.py ... --arch bs
 ## 💻 C++ API
 
 ```cpp
-#include <mel_band_roformer/inference.h>
-#include <mel_band_roformer/audio.h>
+#include <bs_roformer/inference.h>
+#include <bs_roformer/audio.h>
 
 // 1. 加载音频文件
 AudioBuffer input = AudioFile::Load("input.wav");
@@ -184,9 +184,9 @@ AudioFile::Save("vocals.wav", output);
 ## 🏗️ 项目架构
 
 ```
-MelBandRoformer.cpp/
+BSRoformer.cpp/
 ├── include/
-│   └── mel_band_roformer/
+│   └── bs_roformer/
 │       ├── inference.h        # 推理引擎 API
 │       └── audio.h            # 音频 I/O API
 ├── src/
@@ -214,7 +214,7 @@ MelBandRoformer.cpp/
 
 ### 1. 模型加载 (`model.h/cpp`)
 
-`MelBandRoformer` 类负责：
+`BSRoformer` 类负责：
 
 - **GGUF 权重加载**：从文件解析超参数和张量
 - **缓冲区生成**：`freq_indices`、`num_bands_per_freq` 等

@@ -10,7 +10,7 @@ int main(int argc, char* argv[]) {
     if (argc > 2) data_dir = argv[2];
     
     LOG_STEP(1, 4, "Loading model from " + model_path);
-    MelBandRoformer model;
+    BSRoformer model;
     model.Initialize(model_path);
     
     LOG_STEP(2, 4, "Loading golden tensors");

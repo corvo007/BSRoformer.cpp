@@ -276,8 +276,8 @@ jobs:
           echo "=== CLI Test Suite ==="
           
           # Dynamically find CLI executable
-          CLI_NAME="mel_band_roformer-cli"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then CLI_NAME="mel_band_roformer-cli.exe"; fi
+          CLI_NAME="bs_roformer-cli"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then CLI_NAME="bs_roformer-cli.exe"; fi
           
           echo "Searching for $CLI_NAME..."
           CLI_PATH=$(find build -name "$CLI_NAME" | head -n 1)
@@ -370,7 +370,7 @@ jobs:
             build/*.dll
             build/*.so
             build/*.dylib
-            build/mel_band_roformer-cli*
+            build/bs_roformer-cli*
             build/Release/
           retention-days: 7
       
@@ -383,10 +383,10 @@ jobs:
           mkdir -p release/mel-band-roformer
           
           # Find and copy CLI executable
-          CLI_PATH=$(find build -name "mel_band_roformer-cli" -type f | head -n 1)
+          CLI_PATH=$(find build -name "bs_roformer-cli" -type f | head -n 1)
           if [[ -n "$CLI_PATH" ]]; then
             cp "$CLI_PATH" release/mel-band-roformer/
-            chmod +x release/mel-band-roformer/mel_band_roformer-cli
+            chmod +x release/mel-band-roformer/bs_roformer-cli
           fi
           
           # Copy shared libraries if exist (only real files, not symlinks)
@@ -406,7 +406,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "release\mel-band-roformer"
           
           # Find and copy CLI executable
-          $CliPath = Get-ChildItem -Path build -Filter "mel_band_roformer-cli.exe" -Recurse -File | Select-Object -First 1
+          $CliPath = Get-ChildItem -Path build -Filter "bs_roformer-cli.exe" -Recurse -File | Select-Object -First 1
           if ($CliPath) {
             Copy-Item $CliPath.FullName "release\mel-band-roformer\"
           }
@@ -423,7 +423,7 @@ jobs:
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MelBandRoformer-${{ matrix.name }}
+          name: BSRoformer-${{ matrix.name }}
           path: release/mel-band-roformer/
           retention-days: 30
 
@@ -502,10 +502,10 @@ jobs:
           mkdir -p release/mel-band-roformer
           
           # Find and copy CLI executable
-          CLI_PATH=$(find build -name "mel_band_roformer-cli" -type f | head -n 1)
+          CLI_PATH=$(find build -name "bs_roformer-cli" -type f | head -n 1)
           if [[ -n "$CLI_PATH" ]]; then
             cp "$CLI_PATH" release/mel-band-roformer/
-            chmod +x release/mel-band-roformer/mel_band_roformer-cli
+            chmod +x release/mel-band-roformer/bs_roformer-cli
           fi
           
           # Copy shared libraries
@@ -520,7 +520,7 @@ jobs:
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MelBandRoformer-linux-cuda-${{ matrix.cuda_version }}
+          name: BSRoformer-linux-cuda-${{ matrix.cuda_version }}
           path: release/mel-band-roformer/
           retention-days: 30
 
@@ -622,7 +622,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "release\mel-band-roformer"
           
           # Find and copy CLI executable
-          $CliPath = Get-ChildItem -Path build -Filter "mel_band_roformer-cli.exe" -Recurse -File | Select-Object -First 1
+          $CliPath = Get-ChildItem -Path build -Filter "bs_roformer-cli.exe" -Recurse -File | Select-Object -First 1
           if ($CliPath) {
             Copy-Item $CliPath.FullName "release\mel-band-roformer\"
           }
@@ -639,6 +639,6 @@ jobs:
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MelBandRoformer-windows-cuda-${{ matrix.cuda_version }}
+          name: BSRoformer-windows-cuda-${{ matrix.cuda_version }}
           path: release\mel-band-roformer\
           retention-days: 30

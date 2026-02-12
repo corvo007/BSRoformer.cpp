@@ -1,6 +1,6 @@
-# MelBandRoformer Tests
+# MelBandRoformer/BSRoformer Tests
 
-This directory contains the test suite for the MelBandRoformer C++ implementation.
+This directory contains the test suite for the MelBandRoformer/BSRoformer C++ implementation.
 
 ## Test Overview
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.17)
-project(mel_band_roformer_cpp VERSION 1.0.0 LANGUAGES CXX)
+project(bs_roformer_cpp VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,41 +69,41 @@ set(MBR_SOURCES
     src/inference.cpp
 )
 
-add_library(mel_band_roformer STATIC ${MBR_SOURCES})
+add_library(bs_roformer STATIC ${MBR_SOURCES})
 
-target_include_directories(mel_band_roformer PUBLIC
+target_include_directories(bs_roformer PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_include_directories(mel_band_roformer PRIVATE
+target_include_directories(bs_roformer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(mel_band_roformer PUBLIC ggml)
+target_link_libraries(bs_roformer PUBLIC ggml)
 if(GGML_CUDA AND TARGET ggml-cuda)
-    target_link_libraries(mel_band_roformer PUBLIC ggml-cuda)
+    target_link_libraries(bs_roformer PUBLIC ggml-cuda)
     
     # Fix for CI: Link against CUDA stubs if the driver is not present
     # This prevents errors like "libcuda.so.1 needed by ... not found" during linking
     find_package(CUDAToolkit REQUIRED)
     if(TARGET CUDA::cuda_driver)
-        target_link_libraries(mel_band_roformer PUBLIC CUDA::cuda_driver)
+        target_link_libraries(bs_roformer PUBLIC CUDA::cuda_driver)
         message(STATUS "Linked against CUDA driver stubs")
     endif()
 endif()
 
 # Compiler options
 if(MSVC)
-    target_compile_options(mel_band_roformer PRIVATE /W3 /utf-8)
+    target_compile_options(bs_roformer PRIVATE /W3 /utf-8)
 else()
-    target_compile_options(mel_band_roformer PRIVATE -Wall -Wextra)
+    target_compile_options(bs_roformer PRIVATE -Wall -Wextra)
 endif()
 
 # OpenMP support
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
-    target_link_libraries(mel_band_roformer PUBLIC OpenMP::OpenMP_CXX)
-    target_compile_definitions(mel_band_roformer PUBLIC USE_OPENMP)
+    target_link_libraries(bs_roformer PUBLIC OpenMP::OpenMP_CXX)
+    target_compile_definitions(bs_roformer PUBLIC USE_OPENMP)
     message(STATUS "OpenMP: ENABLED")
 else()
     message(STATUS "OpenMP: NOT FOUND")
@@ -138,21 +138,21 @@ endfunction()
 
 if(MBR_BUILD_CLI)
     # audio.cpp implements AudioFile utilities (using dr_wav)
-    add_executable(mel_band_roformer-cli 
+    add_executable(bs_roformer-cli 
         cli/main.cpp 
         src/audio.cpp
     )
-    target_link_libraries(mel_band_roformer-cli PRIVATE mel_band_roformer)
-    target_include_directories(mel_band_roformer-cli PRIVATE 
+    target_link_libraries(bs_roformer-cli PRIVATE bs_roformer)
+    target_include_directories(bs_roformer-cli PRIVATE 
         src 
         third_party
     )
     
     if(MSVC)
-        target_compile_options(mel_band_roformer-cli PRIVATE /W3 /utf-8)
+        target_compile_options(bs_roformer-cli PRIVATE /W3 /utf-8)
     endif()
     
-    mbr_copy_ggml_dlls(mel_band_roformer-cli)
+    mbr_copy_ggml_dlls(bs_roformer-cli)
 endif()
 
 #================================================

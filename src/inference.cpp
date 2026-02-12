@@ -1,4 +1,4 @@
-#include "mel_band_roformer/inference.h"
+#include "bs_roformer/inference.h"
 #include "model.h"
 #include "utils.h"
 #include "stft.h"
@@ -34,7 +34,7 @@ std::vector<float> GetWindow(int size, int fade_size) {
 
 
 Inference::Inference(const std::string& model_path) {
-    model_ = std::make_unique<MelBandRoformer>();
+    model_ = std::make_unique<BSRoformer>();
     model_->Initialize(model_path);
 }
 

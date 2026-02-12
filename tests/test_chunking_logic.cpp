@@ -1,5 +1,5 @@
 #include "test_common.h"
-#include "mel_band_roformer/inference.h"
+#include "bs_roformer/inference.h"
 #include <cstring>
 
 // We need to test the static helper OR the pipeline.

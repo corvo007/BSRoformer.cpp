@@ -1,5 +1,5 @@
-#include "mel_band_roformer/inference.h"
-#include "mel_band_roformer/audio.h"
+#include "bs_roformer/inference.h"
+#include "bs_roformer/audio.h"
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -74,7 +74,7 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        std::cout << "Initializing MelBandRoformer..." << std::endl;
+        std::cout << "Initializing BSRoformer..." << std::endl;
         auto start_time = std::chrono::high_resolution_clock::now();
         
         Inference engine(model_path);

@@ -19,7 +19,7 @@
 
 std::string GetModelPath() {
     const char* env = std::getenv("MBR_MODEL_PATH");
-    return env ? env : "mel_band_roformer.gguf";
+    return env ? env : "bs_roformer.gguf";
 }
 
 std::string GetTestDataDir() {
@@ -41,7 +41,7 @@ int main(int argc, char* argv[]) {
     try {
         // 1. Load Model
         std::cout << "\n[1/6] Loading model..." << std::endl;
-        MelBandRoformer model;
+        BSRoformer model;
         model.Initialize(model_path);
         
         // 2. Load golden tensors

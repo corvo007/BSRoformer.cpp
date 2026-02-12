@@ -3,7 +3,7 @@
 #include <cmath>
 #include <string>
 #include <cstdlib>
-#include "mel_band_roformer/inference.h"
+#include "bs_roformer/inference.h"
 #include "../src/utils.h"
 
 /**
@@ -15,7 +15,7 @@
 
 std::string GetModelPath() {
     const char* env = std::getenv("MBR_MODEL_PATH");
-    return env ? env : "mel_band_roformer.gguf";
+    return env ? env : "bs_roformer.gguf";
 }
 
 std::string GetTestDataDir() {

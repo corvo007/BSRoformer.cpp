@@ -1,6 +1,6 @@
 #define DR_WAV_IMPLEMENTATION
 #include "dr_libs/dr_wav.h"
-#include "mel_band_roformer/audio.h"
+#include "bs_roformer/audio.h"
 #include <iostream>
 
 AudioBuffer AudioFile::Load(const std::string& path) {

@@ -22,7 +22,7 @@ inline std::string GetTestDataDir() {
 
 inline std::string GetModelPath() {
     const char* env = std::getenv("MBR_MODEL_PATH");
-    return env ? env : "mel_band_roformer.gguf";
+    return env ? env : "bs_roformer.gguf";
 }
 
 inline float GetToleranceAtol() {
@@ -42,10 +42,10 @@ struct TestContext {
     ggml_context* ctx = nullptr;
     ggml_cgraph* gf = nullptr;
     ggml_gallocr_t allocr = nullptr;
-    MelBandRoformer* model = nullptr;
+    BSRoformer* model = nullptr;
     
     // 初始化上下文和图
-    TestContext(MelBandRoformer* m, size_t mem_size = 512 * 1024 * 1024);
+    TestContext(BSRoformer* m, size_t mem_size = 512 * 1024 * 1024);
     
     // 析构自动释放资源
     ~TestContext();

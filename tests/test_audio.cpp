@@ -1,7 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
-#include "mel_band_roformer/audio.h"
+#include "bs_roformer/audio.h"
 
 int main() {
     std::cout << "Test: Audio I/O with dr_wav" << std::endl;

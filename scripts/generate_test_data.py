@@ -481,7 +481,7 @@ def generate_test_data(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate test data for MelBandRoformer.cpp",
+        description="Generate test data for BSRoformer.cpp",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Requirements:

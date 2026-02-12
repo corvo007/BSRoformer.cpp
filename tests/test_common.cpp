@@ -3,7 +3,7 @@
 //======================================================
 // TestContext
 //======================================================
-TestContext::TestContext(MelBandRoformer* m, size_t mem_size) : model(m) {
+TestContext::TestContext(BSRoformer* m, size_t mem_size) : model(m) {
     if (!model) {
         std::cerr << "FATAL: Model is null in TestContext" << std::endl;
         exit(1);

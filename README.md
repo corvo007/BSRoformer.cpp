@@ -1,4 +1,4 @@
-# MelBandRoformer.cpp
+# BSRoformer.cpp
 
 [中文](README.zh.md) | English
 
@@ -25,12 +25,12 @@ This project is a pure C++ inference engine for the **Mel-Band-Roformer** and **
 ### Download
 
 - **Pre-built Binaries**: Download executables for your platform from the [Releases](../../releases) page
-- **GGUF Models**: Download pre-converted model files from [MelBandRoformer-GGUF](https://huggingface.co/chenmozhijin/MelBandRoformer-GGUF)
+- **GGUF Models**: Download pre-converted model files from [BSRoformer-GGUF](https://huggingface.co/chenmozhijin/BSRoformer-GGUF)
 
 ### Command Line Usage
 
 ```bash
-./mel_band_roformer-cli <model.gguf> <input.wav> <output.wav> [options]
+./bs_roformer-cli <model.gguf> <input.wav> <output.wav> [options]
 
 Options:
   --chunk-size <N>   Chunk size (in samples), defaults to model value
@@ -49,13 +49,13 @@ Options:
 
 ```bash
 # Basic usage (using model defaults)
-./mel_band_roformer-cli model.gguf song.wav vocals.wav
+./bs_roformer-cli model.gguf song.wav vocals.wav
 
 # Custom chunking parameters
-./mel_band_roformer-cli model.gguf song.wav vocals.wav --chunk-size 352800 --overlap 2
+./bs_roformer-cli model.gguf song.wav vocals.wav --chunk-size 352800 --overlap 2
 
 # High quality mode (increase overlap to reduce artifacts)
-./mel_band_roformer-cli model.gguf song.wav vocals.wav --overlap 4
+./bs_roformer-cli model.gguf song.wav vocals.wav --overlap 4
 ```
 
 > **Note**: Input audio must be **44100 Hz**. Stereo or mono is supported (auto-expanded).
@@ -155,8 +155,8 @@ python scripts/convert_to_gguf.py ... --arch bs
 ## 💻 C++ API
 
 ```cpp
-#include <mel_band_roformer/inference.h>
-#include <mel_band_roformer/audio.h>
+#include <bs_roformer/inference.h>
+#include <bs_roformer/audio.h>
 
 // 1. Load audio file
 AudioBuffer input = AudioFile::Load("input.wav");
@@ -184,9 +184,9 @@ AudioFile::Save("vocals.wav", output);
 ## 🏗️ Project Architecture
 
 ```
-MelBandRoformer.cpp/
+BSRoformer.cpp/
 ├── include/
-│   └── mel_band_roformer/
+│   └── bs_roformer/
 │       ├── inference.h        # Inference Engine API
 │       └── audio.h            # Audio I/O API
 ├── src/
@@ -214,7 +214,7 @@ MelBandRoformer.cpp/
 
 ### 1. Model Loading (`model.h/cpp`)
 
-The `MelBandRoformer` class is responsible for:
+The `BSRoformer` class is responsible for:
 
 - **GGUF Weight Loading**: Parsing hyperparameters and tensors from file
 - **Buffer Generation**: `freq_indices`, `num_bands_per_freq`, etc.

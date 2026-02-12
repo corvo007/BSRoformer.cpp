@@ -1,12 +1,12 @@
 # tests/CMakeLists.txt
-# Test suite for MelBandRoformer
+# Test suite for BSRoformer
 
 #================================================
 # Test Infrastructure
 #================================================
 
 add_library(test_common STATIC test_common.cpp)
-target_link_libraries(test_common PUBLIC mel_band_roformer)
+target_link_libraries(test_common PUBLIC bs_roformer)
 target_include_directories(test_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 #================================================
