@@ -19,7 +19,7 @@ BSRoformer::~BSRoformer() {
 
 void BSRoformer::Initialize(const std::string& model_path) {
     // Use best available backend, but allow forcing CPU
-    if (std::getenv("MBR_FORCE_CPU")) {
+    if (std::getenv("BSR_FORCE_CPU")) {
         backend_ = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
     } else {
         backend_ = ggml_backend_init_best();

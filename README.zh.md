@@ -101,7 +101,7 @@ cmake -B build -DGGML_CUDA=ON
 cmake --build build --config Release --parallel
 
 # 启用测试
-cmake -B build -DGGML_CUDA=ON -DMBR_BUILD_TESTS=ON
+cmake -B build -DGGML_CUDA=ON -DBSR_BUILD_TESTS=ON
 cmake --build build --config Release --parallel
 ```
 
@@ -110,8 +110,8 @@ cmake --build build --config Release --parallel
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `GGML_CUDA` | `ON` | 启用 CUDA 后端 |
-| `MBR_BUILD_CLI` | `ON` | 构建命令行工具 |
-| `MBR_BUILD_TESTS` | `OFF` | 构建测试套件 |
+| `BSR_BUILD_CLI` | `ON` | 构建命令行工具 |
+| `BSR_BUILD_TESTS` | `OFF` | 构建测试套件 |
 
 ---
 
@@ -272,8 +272,8 @@ Chunk N+1:              [CPU预处理] → [GPU推理] → [CPU后处理]
 
 ```bash
 # 设置环境变量
-$env:MBR_MODEL_PATH = "models/model.gguf"
-$env:MBR_TEST_DATA_DIR = "test_data"
+$env:BSR_MODEL_PATH = "models/model.gguf"
+$env:BSR_TEST_DATA_DIR = "test_data"
 
 # 运行所有测试
 ctest --test-dir build -C Release

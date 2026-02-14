@@ -20,7 +20,7 @@ This directory contains the test suite for the MelBandRoformer/BSRoformer C++ im
 
 ```powershell
 # Configure with tests enabled
-cmake -B build -DGGML_CUDA=ON -DMBR_BUILD_TESTS=ON
+cmake -B build -DGGML_CUDA=ON -DBSR_BUILD_TESTS=ON
 
 # Build
 cmake --build build --config Release --parallel 14
@@ -54,8 +54,8 @@ Set environment variables and run:
 
 ```powershell
 # Set environment variables
-$env:MBR_MODEL_PATH = "path/to/model.gguf"
-$env:MBR_TEST_DATA_DIR = "path/to/test_data"
+$env:BSR_MODEL_PATH = "path/to/model.gguf"
+$env:BSR_TEST_DATA_DIR = "path/to/test_data"
 
 # Run all tests
 ctest --test-dir build -C Release
@@ -71,10 +71,10 @@ ctest --test-dir build -C Release --output-on-failure
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `MBR_MODEL_PATH` | Path to GGUF model file | `models/MelBandRoformer-228M-Vocals-v1-FP16.gguf` |
-| `MBR_TEST_DATA_DIR` | Test data directory (containing `activations/` subdirectory) | `test_data` |
-| `MBR_TEST_ATOL` | Absolute tolerance (optional) | `0.01` |
-| `MBR_TEST_RTOL` | Relative tolerance (optional) | `0.01` |
+| `BSR_MODEL_PATH` | Path to GGUF model file | `models/MelBandRoformer-228M-Vocals-v1-FP16.gguf` |
+| `BSR_TEST_DATA_DIR` | Test data directory (containing `activations/` subdirectory) | `test_data` |
+| `BSR_TEST_ATOL` | Absolute tolerance (optional) | `0.01` |
+| `BSR_TEST_RTOL` | Relative tolerance (optional) | `0.01` |
 
 ## Test Data Structure
 
@@ -107,22 +107,22 @@ test_data/
 2. Use utilities from `test_common.h`
 3. Add to `tests/CMakeLists.txt`:
    ```cmake
-   mbr_add_test(test_xxx)
+   bsr_add_test(test_xxx)
    ```
 
 ## Troubleshooting
 
 ### Test fails: Model file not found
 
-Ensure `MBR_MODEL_PATH` points to a valid `.gguf` file.
+Ensure `BSR_MODEL_PATH` points to a valid `.gguf` file.
 
 ### Test fails: Test data not found
 
-Ensure `MBR_TEST_DATA_DIR` points to a directory containing the `activations/` subdirectory.
+Ensure `BSR_TEST_DATA_DIR` points to a directory containing the `activations/` subdirectory.
 
 ### Numerical mismatch
 
 For quantized models, relax the tolerance:
 ```powershell
-$env:MBR_TEST_ATOL = "0.05"
+$env:BSR_TEST_ATOL = "0.05"
 ```

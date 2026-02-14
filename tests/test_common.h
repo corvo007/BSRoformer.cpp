@@ -16,22 +16,22 @@
 // 配置获取
 //======================================================
 inline std::string GetTestDataDir() {
-    const char* env = std::getenv("MBR_TEST_DATA_DIR");
+    const char* env = std::getenv("BSR_TEST_DATA_DIR");
     return env ? env : ".";
 }
 
 inline std::string GetModelPath() {
-    const char* env = std::getenv("MBR_MODEL_PATH");
+    const char* env = std::getenv("BSR_MODEL_PATH");
     return env ? env : "bs_roformer.gguf";
 }
 
 inline float GetToleranceAtol() {
-    const char* env = std::getenv("MBR_TEST_ATOL");
+    const char* env = std::getenv("BSR_TEST_ATOL");
     return env ? std::stof(env) : 1e-3f;
 }
 
 inline float GetToleranceRtol() {
-    const char* env = std::getenv("MBR_TEST_RTOL");
+    const char* env = std::getenv("BSR_TEST_RTOL");
     return env ? std::stof(env) : 1e-2f;
 }
 

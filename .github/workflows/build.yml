@@ -223,8 +223,8 @@ jobs:
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-            -DMBR_BUILD_TESTS=ON \
-            -DMBR_BUILD_CLI=ON
+            -DBSR_BUILD_TESTS=ON \
+            -DBSR_BUILD_CLI=ON
             
       - name: Configure (Windows)
         if: runner.os == 'Windows'
@@ -235,8 +235,8 @@ jobs:
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
-            -DMBR_BUILD_TESTS=ON `
-            -DMBR_BUILD_CLI=ON
+            -DBSR_BUILD_TESTS=ON `
+            -DBSR_BUILD_CLI=ON
             
       # ----- Build -----
       - name: Build (Unix)
@@ -251,18 +251,17 @@ jobs:
       - name: Run Unit Tests
         if: matrix.test
         env:
-          MBR_MODEL_PATH: ${{ github.workspace }}/model.gguf
-          MBR_TEST_DATA_DIR: ${{ github.workspace }}/test_data
-          MBR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
+          BSR_MODEL_PATH: ${{ github.workspace }}/model.gguf
+          BSR_TEST_DATA_DIR: ${{ github.workspace }}/test_data
+          BSR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
         run: ctest --test-dir build -C Release -V --output-on-failure --timeout 300
         
       - name: Run Unit Tests (BS Roformer)
         if: matrix.test
         env:
-          MBR_MODEL_PATH: ${{ github.workspace }}/model_bs.gguf
-          MBR_TEST_DATA_DIR: ${{ github.workspace }}/test_data_bs
-          MBR_ARCHITECTURE: bs
-          MBR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
+          BSR_MODEL_PATH: ${{ github.workspace }}/model_bs.gguf
+          BSR_TEST_DATA_DIR: ${{ github.workspace }}/test_data_bs
+          BSR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
         run: ctest --test-dir build -C Release -V --output-on-failure --timeout 300
         
       # ----- CLI Tests -----
@@ -270,8 +269,8 @@ jobs:
         if: matrix.test
         shell: bash
         env:
-          MBR_MODEL_PATH: ${{ github.workspace }}/model.gguf
-          MBR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
+          BSR_MODEL_PATH: ${{ github.workspace }}/model.gguf
+          BSR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
         run: |
           echo "=== CLI Test Suite ==="
           
@@ -331,7 +330,7 @@ jobs:
           # 4. Run full inference
           echo "[4/4] Running inference..."
           # Use absolute paths for input/output to avoid directory issues
-          ABS_MODEL=$(readlink -f "$MBR_MODEL_PATH" || echo "$(pwd)/model.gguf")
+          ABS_MODEL=$(readlink -f "$BSR_MODEL_PATH" || echo "$(pwd)/model.gguf")
           ABS_INPUT=$(readlink -f cli_test_input.wav || echo "$(pwd)/cli_test_input.wav")
           ABS_OUTPUT=$(readlink -f cli_test_output.wav || echo "$(pwd)/cli_test_output.wav")
           
@@ -479,8 +478,8 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CUDA_COMPILER_LAUNCHER=sccache \
-            -DMBR_BUILD_TESTS=OFF \
-            -DMBR_BUILD_CLI=ON
+            -DBSR_BUILD_TESTS=OFF \
+            -DBSR_BUILD_CLI=ON
             
       - name: Build
         run: cmake --build build --config Release -j $(nproc)
@@ -600,8 +599,8 @@ jobs:
             "-DCMAKE_CUDA_ARCHITECTURES=$cudaArchs" `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
-            -DMBR_BUILD_TESTS=OFF `
-            -DMBR_BUILD_CLI=ON
+            -DBSR_BUILD_TESTS=OFF `
+            -DBSR_BUILD_CLI=ON
           cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
         
       - name: Upload Artifacts

@@ -101,7 +101,7 @@ cmake -B build -DGGML_CUDA=ON
 cmake --build build --config Release --parallel
 
 # Enable Tests
-cmake -B build -DGGML_CUDA=ON -DMBR_BUILD_TESTS=ON
+cmake -B build -DGGML_CUDA=ON -DBSR_BUILD_TESTS=ON
 cmake --build build --config Release --parallel
 ```
 
@@ -110,8 +110,10 @@ cmake --build build --config Release --parallel
 | Option | Default | Description |
 |--------|---------|-------------|
 | `GGML_CUDA` | `ON` | Enable CUDA backend |
-| `MBR_BUILD_CLI` | `ON` | Build command line tool |
-| `MBR_BUILD_TESTS` | `OFF` | Build test suite |
+| `BSR_BUILD_CLI` | `ON` | Build command line tool |
+| `BSR_BUILD_TESTS` | `OFF` | Build test suite |
+
+> **Breaking Change:** build/test prefixes were renamed from `MBR_*` to `BSR_*` with no compatibility aliases.
 
 ---
 
@@ -272,8 +274,8 @@ Lightweight audio processing based on [dr_libs](https://github.com/mackron/dr_li
 
 ```bash
 # Set environment variables
-$env:MBR_MODEL_PATH = "models/model.gguf"
-$env:MBR_TEST_DATA_DIR = "test_data"
+$env:BSR_MODEL_PATH = "models/model.gguf"
+$env:BSR_TEST_DATA_DIR = "test_data"
 
 # Run all tests
 ctest --test-dir build -C Release

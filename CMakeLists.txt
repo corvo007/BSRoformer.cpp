@@ -9,8 +9,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #================================================
 
 option(GGML_CUDA "Enable CUDA backend" ON)
-option(MBR_BUILD_TESTS "Build tests" OFF)
-option(MBR_BUILD_CLI "Build CLI application" ON)
+option(BSR_BUILD_TESTS "Build tests" OFF)
+option(BSR_BUILD_CLI "Build CLI application" ON)
 
 #================================================
 # Dependencies - GGML (Flexible Resolution)
@@ -63,13 +63,13 @@ endif()
 # Core Library
 #================================================
 
-set(MBR_SOURCES
+set(BSR_SOURCES
     src/model.cpp
     src/utils.cpp
     src/inference.cpp
 )
 
-add_library(bs_roformer STATIC ${MBR_SOURCES})
+add_library(bs_roformer STATIC ${BSR_SOURCES})
 
 target_include_directories(bs_roformer PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -81,8 +81,6 @@ target_include_directories(bs_roformer PRIVATE
 
 target_link_libraries(bs_roformer PUBLIC ggml)
 if(GGML_CUDA AND TARGET ggml-cuda)
-    target_link_libraries(bs_roformer PUBLIC ggml-cuda)
-    
     # Fix for CI: Link against CUDA stubs if the driver is not present
     # This prevents errors like "libcuda.so.1 needed by ... not found" during linking
     find_package(CUDAToolkit REQUIRED)
@@ -113,30 +111,52 @@ endif()
 # DLL Copy Helper (Windows)
 #================================================
 
-function(mbr_copy_ggml_dlls target_name)
+function(bsr_copy_ggml_runtime_dlls target_name)
     if(NOT WIN32)
         return()
     endif()
-    
-    set(GGML_DLL_TARGETS ggml ggml-base ggml-cpu ggml-cuda ggml-vulkan)
-    
-    foreach(dll_target ${GGML_DLL_TARGETS})
-        if(TARGET ${dll_target})
-            add_custom_command(TARGET ${target_name} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    $<TARGET_FILE:${dll_target}>
-                    $<TARGET_FILE_DIR:${target_name}>
-                COMMENT "Copying ${dll_target}.dll for ${target_name}"
-            )
+
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.21")
+        add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_RUNTIME_DLLS:${target_name}>
+                $<TARGET_FILE_DIR:${target_name}>
+            COMMAND_EXPAND_LISTS
+            COMMENT "Copying runtime DLLs for ${target_name}"
+        )
+        return()
+    endif()
+
+    set(ggml_dll_targets ggml ggml-base ggml-cpu ggml-cuda ggml-vulkan)
+    set(runtime_dll_files)
+
+    foreach(dll_target IN LISTS ggml_dll_targets)
+        if(NOT TARGET ${dll_target})
+            continue()
+        endif()
+
+        get_target_property(dll_target_type ${dll_target} TYPE)
+        if(dll_target_type STREQUAL "SHARED_LIBRARY" OR dll_target_type STREQUAL "MODULE_LIBRARY")
+            list(APPEND runtime_dll_files $<TARGET_FILE:${dll_target}>)
         endif()
     endforeach()
+
+    if(runtime_dll_files)
+        add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${runtime_dll_files}
+                $<TARGET_FILE_DIR:${target_name}>
+            COMMAND_EXPAND_LISTS
+            COMMENT "Copying GGML runtime DLLs for ${target_name}"
+        )
+    endif()
 endfunction()
 
 #================================================
 # CLI Application
 #================================================
 
-if(MBR_BUILD_CLI)
+if(BSR_BUILD_CLI)
     # audio.cpp implements AudioFile utilities (using dr_wav)
     add_executable(bs_roformer-cli 
         cli/main.cpp 
@@ -152,17 +172,17 @@ if(MBR_BUILD_CLI)
         target_compile_options(bs_roformer-cli PRIVATE /W3 /utf-8)
     endif()
     
-    mbr_copy_ggml_dlls(bs_roformer-cli)
+    bsr_copy_ggml_runtime_dlls(bs_roformer-cli)
 endif()
 
 #================================================
 # Tests (Optional)
 #================================================
 
-if(MBR_BUILD_TESTS)
+if(BSR_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
     message(STATUS "Tests: ENABLED")
 else()
-    message(STATUS "Tests: DISABLED (use -DMBR_BUILD_TESTS=ON to enable)")
+    message(STATUS "Tests: DISABLED (use -DBSR_BUILD_TESTS=ON to enable)")
 endif()

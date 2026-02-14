@@ -24,7 +24,7 @@ int main(int argc, char* argv[]) {
     
     // We use load_npy directly as they might not be in activations/
     // We use load_npy directly as they are in tests/ directory
-    // Use data_dir (from MBR_TEST_DATA_DIR or default)
+    // Use data_dir (from BSR_TEST_DATA_DIR or default)
     std::string in_path = data_dir + "/chunk_in.npy";
     std::string out_path = data_dir + "/chunk_out.npy";
 

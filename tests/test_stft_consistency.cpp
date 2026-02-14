@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
         model.Initialize(model_path);
     } catch (const std::exception& e) {
         std::cerr << "Failed to load model: " << e.what() << std::endl;
-        std::cerr << "Ensure MBR_MODEL_PATH is set correctly or bs_roformer.gguf exists." << std::endl;
+        std::cerr << "Ensure BSR_MODEL_PATH is set correctly or bs_roformer.gguf exists." << std::endl;
         return 1;
     }
     

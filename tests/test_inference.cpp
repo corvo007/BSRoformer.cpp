@@ -14,12 +14,12 @@
  */
 
 std::string GetModelPath() {
-    const char* env = std::getenv("MBR_MODEL_PATH");
+    const char* env = std::getenv("BSR_MODEL_PATH");
     return env ? env : "bs_roformer.gguf";
 }
 
 std::string GetTestDataDir() {
-    const char* env = std::getenv("MBR_TEST_DATA_DIR");
+    const char* env = std::getenv("BSR_TEST_DATA_DIR");
     return env ? env : ".";
 }
 
