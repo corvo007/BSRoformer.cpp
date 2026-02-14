@@ -155,6 +155,7 @@ python scripts/convert_to_gguf.py ... --arch bs
 ## 💻 C++ API
 
 ```cpp
+#include <atomic>
 #include <bs_roformer/inference.h>
 #include <bs_roformer/audio.h>
 
@@ -168,16 +169,22 @@ Inference engine("model.gguf");
 int chunk_size = engine.GetDefaultChunkSize();   // 如 352800
 int num_overlap = engine.GetDefaultNumOverlap(); // 如 2
 
-// 4. 执行推理（带进度回调）
+// 4. 执行推理（带进度回调 + 取消回调）
+std::atomic<bool> should_cancel{false};
 auto stems = engine.Process(input.data, chunk_size, num_overlap,
     [](float progress) {
         std::cout << "Progress: " << int(progress * 100) << "%" << std::endl;
+    },
+    [&should_cancel]() {
+        return should_cancel.load();
     });
 
 // 5. 保存结果
 AudioBuffer output{stems[0], 2, 44100, stems[0].size()};
 AudioFile::Save("vocals.wav", output);
 ```
+
+当 `cancel_callback` 返回 `true` 时，`Process()` 会抛出 `std::runtime_error("Inference cancelled")`。
 
 ---
 

@@ -12,6 +12,8 @@ namespace ggml { struct context; struct cgraph; }
 
 class Inference {
 public:
+    using CancelCallback = std::function<bool()>;
+
     Inference(const std::string& model_path);
     ~Inference();
 
@@ -22,7 +24,8 @@ public:
     std::vector<std::vector<float>> Process(const std::vector<float>& input_audio, 
                                int chunk_size = 352800, 
                                int num_overlap = 2,
-                               std::function<void(float)> progress_callback = nullptr);
+                               std::function<void(float)> progress_callback = nullptr,
+                               CancelCallback cancel_callback = nullptr);
 
     // Low-level chunk processing (public for testing)
     std::vector<std::vector<float>> ProcessChunk(const std::vector<float>& chunk_audio);
@@ -39,14 +42,16 @@ public:
                                                 int chunk_size, 
                                                 int num_overlap,
                                                 ModelCallback model_func,
-                                                std::function<void(float)> progress_callback = nullptr); // Added callback
+                                                std::function<void(float)> progress_callback = nullptr,
+                                                CancelCallback cancel_callback = nullptr);
 
 private:
     // Pipelined Overlap-Add
     std::vector<std::vector<float>> ProcessOverlapAddPipelined(const std::vector<float>& input_audio, 
                                                   int chunk_size, 
                                                   int num_overlap,
-                                                  std::function<void(float)> progress_callback);
+                                                  std::function<void(float)> progress_callback,
+                                                  CancelCallback cancel_callback);
 
 private:
     std::unique_ptr<BSRoformer> model_;

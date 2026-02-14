@@ -3,6 +3,7 @@
 #include <cmath>
 #include <string>
 #include <cstdlib>
+#include <algorithm>
 #include "bs_roformer/inference.h"
 #include "../src/utils.h"
 
@@ -55,6 +56,21 @@ int main(int argc, char* argv[]) {
         // This matches the generation of output_audio.npy
         std::vector<std::vector<float>> output_stems = engine.ProcessChunk(input_audio);
         std::vector<float> output_audio = output_stems[0];
+
+        // Smoke test new cancel callback path in Process()
+        size_t smoke_samples = std::min<size_t>(input_audio.size(), static_cast<size_t>(16384 * 2));
+        if (smoke_samples % 2 != 0) {
+            smoke_samples -= 1;
+        }
+        if (smoke_samples >= 2) {
+            std::vector<float> smoke_input(input_audio.begin(), input_audio.begin() + smoke_samples);
+            auto cancel_false = []() { return false; };
+            auto smoke_stems = engine.Process(smoke_input, 16384, 2, nullptr, cancel_false);
+            if (smoke_stems.empty() || smoke_stems[0].empty()) {
+                std::cerr << "Process() smoke test returned empty output" << std::endl;
+                return 1;
+            }
+        }
         
         std::cout << "  Input size: " << input_audio.size() << std::endl;
         std::cout << "  Output size: " << output_audio.size() << std::endl;
