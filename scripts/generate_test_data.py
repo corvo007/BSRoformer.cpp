@@ -300,6 +300,29 @@ def generate_test_data(
             return_complex=True,
         )
         stft_repr = torch.view_as_real(stft_repr)
+
+        # ===== CAPTURE: Raw STFT/ISTFT for C++ Verification =====
+        # Unpack to [batch, channels, freq, time, 2]
+        stft_raw_unpacked = unpack_one(
+            stft_repr, batch_audio_channel_packed_shape, "* f t c"
+        )
+        captured["stft_raw"] = stft_raw_unpacked.clone()
+
+        # Compute ISTFT directly on this raw STFT (Identity check)
+        stft_complex = torch.view_as_complex(stft_repr)
+        istft_check = torch.istft(
+            stft_complex,
+            **model.stft_kwargs,
+            window=stft_window,
+            return_complex=False,
+            length=istft_length,
+        )
+        istft_check_unpacked = unpack_one(
+            istft_check, batch_audio_channel_packed_shape, "* t"
+        )
+        captured["istft_raw"] = istft_check_unpacked.clone()
+        # ========================================================
+
         stft_repr = unpack_one(stft_repr, batch_audio_channel_packed_shape, "* f t c")
         stft_repr = rearrange(stft_repr, "b s f t c -> b (f s) t c")
 

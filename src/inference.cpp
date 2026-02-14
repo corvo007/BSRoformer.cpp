@@ -11,6 +11,10 @@
 #include <ggml-backend.h>
 #include <chrono>
 #include <future>
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 using Complex = std::complex<float>;
 
@@ -386,6 +390,63 @@ std::vector<std::vector<float>> Inference::ProcessChunk(const std::vector<float>
 // Pipelined Overlap-Add Logic
 // =================================================================================================
 
+// =================================================================================================
+// Thread Safe Queue
+// =================================================================================================
+
+template <typename T>
+class ThreadSafeQueue {
+public:
+    ThreadSafeQueue(size_t max_size) : max_size_(max_size), shutdown_(false) {}
+
+    ~ThreadSafeQueue() {
+        Shutdown();
+    }
+
+    void Push(T item) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_push_.wait(lock, [this] { return queue_.size() < max_size_ || shutdown_; });
+        if (shutdown_) return;
+        queue_.push(std::move(item));
+        cv_pop_.notify_one();
+    }
+
+    bool Pop(T& item) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_pop_.wait(lock, [this] { return !queue_.empty() || shutdown_; });
+        if (queue_.empty() && shutdown_) return false;
+        item = std::move(queue_.front());
+        queue_.pop();
+        cv_push_.notify_one();
+        return true;
+    }
+
+    void Shutdown() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            shutdown_ = true;
+        }
+        cv_push_.notify_all();
+        cv_pop_.notify_all();
+    }
+
+private:
+    std::queue<T> queue_;
+    size_t max_size_;
+    bool shutdown_;
+    std::mutex mutex_;
+    std::condition_variable cv_push_;
+    std::condition_variable cv_pop_;
+};
+
+// =================================================================================================
+// Pipelined Overlap-Add Logic
+// =================================================================================================
+
+// =================================================================================================
+// Pipelined Overlap-Add Logic (Optimized 3-Stage)
+// =================================================================================================
+
 std::vector<std::vector<float>> Inference::ProcessOverlapAddPipelined(const std::vector<float>& input_audio, 
                                                          int chunk_size, 
                                                          int num_overlap,
@@ -443,6 +504,7 @@ std::vector<std::vector<float>> Inference::ProcessOverlapAddPipelined(const std:
     std::vector<std::vector<float>> result; // [stems][samples]
     std::vector<float> counter(n_padded_samples * channels, 0.0f);
     std::vector<float> window_base = GetWindow(chunk_size, fade_size);
+    std::mutex result_mutex; // Protects 'result' and 'counter'
     
     // lambda to extract chunk 'i'
     auto extract_chunk = [&](int i) -> std::vector<float> {
@@ -476,11 +538,14 @@ std::vector<std::vector<float>> Inference::ProcessOverlapAddPipelined(const std:
     };
 
     // lambda to accumulate result 'state' at offset 'i'
+    // Now protected by mutex
     auto accumulate_result = [&](std::shared_ptr<ChunkState> state, int i) {
         if (!state) return;
-        const std::vector<std::vector<float>>& chunk_out_stems = state->final_audio; // Now [stems][samples]
+        const std::vector<std::vector<float>>& chunk_out_stems = state->final_audio;
         if (chunk_out_stems.empty()) return;
         
+        std::lock_guard<std::mutex> lock(result_mutex);
+
         // Lazy Initialize result
         if (result.empty()) {
             int num_stems = chunk_out_stems.size();
@@ -505,9 +570,9 @@ std::vector<std::vector<float>> Inference::ProcessOverlapAddPipelined(const std:
             
             for (int s = 0; s < num_stems; ++s) {
                  if (s >= chunk_out_stems.size()) continue;
-                 const auto& stem_chunk = chunk_out_stems[s];
-                 result[s][res_idx + 0] += stem_chunk[chk_idx + 0] * w;
-                 result[s][res_idx + 1] += stem_chunk[chk_idx + 1] * w;
+                 // result[s] is huge, but we access linearly in this block
+                 result[s][res_idx + 0] += chunk_out_stems[s][chk_idx + 0] * w;
+                 result[s][res_idx + 1] += chunk_out_stems[s][chk_idx + 1] * w;
             }
             
             // Counter is same for all stems, just update once
@@ -516,92 +581,69 @@ std::vector<std::vector<float>> Inference::ProcessOverlapAddPipelined(const std:
         }
     };
 
-    // ==========================================================
-    // Pipeline Loop
-    // ==========================================================
+    // =================================================================================================
+    // 3-Stage Pipeline
+    // =================================================================================================
     
-    // Future for the NEXT chunk's preprocessing
-    std::future<std::shared_ptr<ChunkState>> next_prep_future;
+    // Queues
+    // Bounded size to prevents running out of memory
+    // 3 items buffer is enough to keep GPU busy
+    ThreadSafeQueue<std::shared_ptr<ChunkState>> input_queue(3);
+    ThreadSafeQueue<std::shared_ptr<ChunkState>> output_queue(3);
     
-    // Future for the PREVIOUS chunk's postprocessing
-    std::future<void> prev_post_future;
+    // Structure to hold chunk metadata together
+    struct ChunkTask {
+        int offset;
+        std::shared_ptr<ChunkState> state;
+    };
     
-    std::shared_ptr<ChunkState> prev_state = nullptr;
-    
-    int i = 0;
-    int current_offset = 0;
-    
-    // Bootstrap: Start PreProcessing first chunk
-    {
-        std::vector<float> chunk0 = extract_chunk(0);
-        // Async launch
-        next_prep_future = std::async(std::launch::async, 
-            [this](std::vector<float> c, int id) { return this->PreProcessChunk(c, id); }, 
-            std::move(chunk0), 0);
-    }
-    
-    while (current_offset < n_padded_samples) {
-        // 1. Wait for PRE-processing of CURRENT chunk
-        if (next_prep_future.valid()) {
-            // This blocks until STFT is done.
-            // In steady state, this should be ready or nearly ready while GPU was busy.
-        }
-        auto current_state = next_prep_future.get();
-        
-        // 2. Start PRE-processing of NEXT chunk (if exists)
-        int next_offset = current_offset + step;
-        if (next_offset < n_padded_samples) {
-             std::vector<float> chunk_next = extract_chunk(next_offset);
-             next_prep_future = std::async(std::launch::async, 
-                [this](std::vector<float> c, int id) { return this->PreProcessChunk(c, id); }, 
-                std::move(chunk_next), next_offset);
-        } else {
-            // No more next chunks
-        }
-        
-        // 3. Run Inference on CURRENT chunk (GPU Sync)
-        // This blocks heavily.
-        RunInference(current_state);
-        
-        // 4. Wait for POST-processing of PREVIOUS chunk
-        if (prev_post_future.valid()) {
-            prev_post_future.get();
-        }
-        
-        // 5. Accumulate PREVIOUS chunk result (Serial, fast)
-        // Note: PostProcessChunk fills 'final_audio', but doesn't accumulate to 'result'.
-        // We do accumulation here on main thread to avoid races on 'result' buffer.
-        if (prev_state) {
-            int prev_offset = current_offset - step;
-            accumulate_result(prev_state, prev_offset);
-            prev_state = nullptr; // Free memory
-        }
-        
-        // 6. Start POST-processing of CURRENT chunk
-        prev_state = current_state;
-        // Use shared_ptr copy
-        prev_post_future = std::async(std::launch::async, 
-            [this](std::shared_ptr<ChunkState> s) { this->PostProcessChunk(s); }, 
-            prev_state);
+    // 1. Preprocessor Thread
+    auto preproccessor = std::thread([&]() {
+        int current_offset = 0;
+        while (current_offset < n_padded_samples) {
+            std::vector<float> chunk = extract_chunk(current_offset);
             
-        // Advance
-        current_offset += step;
-
-        if (progress_callback) {
-            float progress = (float)std::min(current_offset, n_padded_samples) / n_padded_samples;
-            progress_callback(progress);
+            auto state = PreProcessChunk(chunk, current_offset); 
+            
+            input_queue.Push(state);
+            current_offset += step;
         }
+        input_queue.Shutdown();
+    });
+    
+    // 3. Postprocessor Thread
+    auto postprocessor = std::thread([&]() {
+        std::shared_ptr<ChunkState> state;
+        while (output_queue.Pop(state)) {
+            // This does ISTFT (CPU intensive)
+            PostProcessChunk(state);
+            
+            // Accumulate (Memory bandwidth intensive + Mutex)
+            accumulate_result(state, state->id); // state->id holds offset
+            
+            if (progress_callback) {
+                float progress = (float)std::min(state->id + step, n_padded_samples) / n_padded_samples;
+                progress_callback(progress);
+            }
+        }
+    });
+    
+    // 2. Main Thread (Inference Loop)
+    std::shared_ptr<ChunkState> state;
+    while (true) {
+        bool ok = input_queue.Pop(state);
+        if (!ok) break; // Input queue shutdown and empty
+        
+        // This does GGML Inference (GPU intensive, Blocking)
+        RunInference(state);
+        
+        output_queue.Push(state);
     }
     
-    // Drain Pipeline
-    // Wait for last post-process
-    if (prev_post_future.valid()) {
-        prev_post_future.get();
-    }
-    if (prev_state) {
-        int prev_offset = current_offset - step;
-        accumulate_result(prev_state, prev_offset);
-    }
+    // Wait for threads
+    output_queue.Shutdown();
+    if (preproccessor.joinable()) preproccessor.join();
+    if (postprocessor.joinable()) postprocessor.join();
     
     // Normalize and Crop
     // result is [stems][samples]

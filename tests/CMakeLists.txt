@@ -45,3 +45,4 @@ mbr_add_test(test_component_mask)
 # Integration tests
 mbr_add_test(test_inference)
 mbr_add_test(test_chunking_logic)
+mbr_add_test(test_stft_consistency)
