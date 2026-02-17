@@ -34,6 +34,7 @@ public:
     int GetDefaultChunkSize() const;
     int GetDefaultNumOverlap() const;
     int GetSampleRate() const;
+    int GetNumStems() const;
 
     // Static helper for Overlap-Add logic (matches Python exactly)
     // model_func: input [samples], output [stems][samples] (interleaved stereo)

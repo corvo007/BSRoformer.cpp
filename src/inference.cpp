@@ -57,6 +57,10 @@ int Inference::GetSampleRate() const {
     return model_->GetSampleRate();
 }
 
+int Inference::GetNumStems() const {
+    return model_->GetNumStems();
+}
+
 Inference::~Inference() {
     if (allocr_) ggml_gallocr_free(allocr_);
     if (ctx_) ggml_free(ctx_);
