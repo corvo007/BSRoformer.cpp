@@ -22,9 +22,6 @@ function(bsr_add_test name)
     add_executable(${name} ${name}.cpp)
     target_link_libraries(${name} PRIVATE test_common)
     add_test(NAME ${name} COMMAND ${name})
-    
-    # Copy DLLs on Windows
-    bsr_copy_ggml_runtime_dlls(${name})
 endfunction()
 
 # Core tests (no external data required)
@@ -33,7 +30,6 @@ add_executable(test_audio test_audio.cpp ../src/audio.cpp)
 target_link_libraries(test_audio PRIVATE test_common)
 target_include_directories(test_audio PRIVATE ../src ../third_party)
 add_test(NAME test_audio COMMAND test_audio)
-bsr_copy_ggml_runtime_dlls(test_audio)
 bsr_add_test(test_component_stft)
 
 # Component tests (require model + test data)
