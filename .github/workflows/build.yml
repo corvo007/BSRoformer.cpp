@@ -143,10 +143,10 @@ jobs:
           # Tier 1: Core Platforms (CPU)
           - { name: linux-x64-cpu,    os: ubuntu-22.04,     backend: cpu,    test: true  }
           - { name: linux-arm64-cpu,  os: ubuntu-22.04-arm, backend: cpu,    test: true  }
-          - { name: macos-arm64,      os: macos-latest,     backend: cpu,    test: true  }
-          - { name: macos-x64,        os: macos-15-intel,   backend: cpu,    test: true  }
+          - { name: macos-arm64,      os: macos-latest,     backend: metal,  test: true  }
+          - { name: macos-x64,        os: macos-15-intel,   backend: metal,  test: true  }
           - { name: windows-x64-msvc, os: windows-2025,     backend: cpu,    test: true  }
-          # Tier 2: Vulkan Backend
+          # Tier 2: GPU Backends
           - { name: linux-vulkan,     os: ubuntu-24.04,     backend: vulkan, test: true  }
           - { name: windows-vulkan,   os: windows-2025,     backend: vulkan, test: true  }
           
@@ -221,6 +221,7 @@ jobs:
             -DGGML_DIR=ggml \
             -DGGML_CUDA=OFF \
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} \
+            -DGGML_METAL=${{ matrix.backend == 'metal' && 'ON' || 'OFF' }} \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
             -DBSR_BUILD_TESTS=ON \
