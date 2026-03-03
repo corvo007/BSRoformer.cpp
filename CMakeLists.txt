@@ -50,6 +50,9 @@ if(NOT TARGET ggml)
             )
         endif()
         
+        # Force ggml to build as static libraries
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
+
         # Add ggml as subdirectory
         add_subdirectory(${GGML_PATH} ggml EXCLUDE_FROM_ALL)
     else()
@@ -108,51 +111,6 @@ else()
 endif()
 
 #================================================
-# DLL Copy Helper (Windows)
-#================================================
-
-function(bsr_copy_ggml_runtime_dlls target_name)
-    if(NOT WIN32)
-        return()
-    endif()
-
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.21")
-        add_custom_command(TARGET ${target_name} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_RUNTIME_DLLS:${target_name}>
-                $<TARGET_FILE_DIR:${target_name}>
-            COMMAND_EXPAND_LISTS
-            COMMENT "Copying runtime DLLs for ${target_name}"
-        )
-        return()
-    endif()
-
-    set(ggml_dll_targets ggml ggml-base ggml-cpu ggml-cuda ggml-vulkan)
-    set(runtime_dll_files)
-
-    foreach(dll_target IN LISTS ggml_dll_targets)
-        if(NOT TARGET ${dll_target})
-            continue()
-        endif()
-
-        get_target_property(dll_target_type ${dll_target} TYPE)
-        if(dll_target_type STREQUAL "SHARED_LIBRARY" OR dll_target_type STREQUAL "MODULE_LIBRARY")
-            list(APPEND runtime_dll_files $<TARGET_FILE:${dll_target}>)
-        endif()
-    endforeach()
-
-    if(runtime_dll_files)
-        add_custom_command(TARGET ${target_name} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${runtime_dll_files}
-                $<TARGET_FILE_DIR:${target_name}>
-            COMMAND_EXPAND_LISTS
-            COMMENT "Copying GGML runtime DLLs for ${target_name}"
-        )
-    endif()
-endfunction()
-
-#================================================
 # CLI Application
 #================================================
 
@@ -171,8 +129,6 @@ if(BSR_BUILD_CLI)
     if(MSVC)
         target_compile_options(bs_roformer-cli PRIVATE /W3 /utf-8)
     endif()
-    
-    bsr_copy_ggml_runtime_dlls(bs_roformer-cli)
 endif()
 
 #================================================

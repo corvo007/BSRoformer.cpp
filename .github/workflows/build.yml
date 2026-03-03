@@ -135,6 +135,7 @@ jobs:
   # Build Matrix: Core Platforms + Vulkan
   # ===========================================================================
   build:
+    name: build-${{ matrix.name }}
     needs: prepare-test-data
     strategy:
       fail-fast: false
@@ -218,6 +219,7 @@ jobs:
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
             -DGGML_DIR=ggml \
             -DGGML_CUDA=OFF \
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} \
@@ -231,6 +233,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cmake -B build -G "Ninja Multi-Config" `
+            -DBUILD_SHARED_LIBS=OFF `
             -DGGML_DIR=ggml `
             -DGGML_CUDA=OFF `
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} `
@@ -359,64 +362,29 @@ jobs:
           
           echo "=== CLI Tests Passed ==="
           
-      # ----- Upload Artifacts -----
-      - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-${{ matrix.name }}
-          path: |
-            build/bin/
-            build/lib*/
-            build/*.dll
-            build/*.so
-            build/*.dylib
-            build/bs_roformer-cli*
-            build/Release/
-          retention-days: 7
-      
       # ----- Prepare Release Artifact -----
       - name: Prepare Release Artifact (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          # Create release directory
           mkdir -p release/mel-band-roformer
-          
-          # Find and copy CLI executable
           CLI_PATH=$(find build -name "bs_roformer-cli" -type f | head -n 1)
           if [[ -n "$CLI_PATH" ]]; then
             cp "$CLI_PATH" release/mel-band-roformer/
             chmod +x release/mel-band-roformer/bs_roformer-cli
           fi
-          
-          # Copy shared libraries if exist (only real files, not symlinks)
-          find build \( -name "*.so*" -o -name "*.dylib" \) -type f ! -type l | while read lib; do
-            cp "$lib" release/mel-band-roformer/ 2>/dev/null || true
-          done
-          
-          # List contents
           echo "Release artifact contents:"
           ls -lh release/mel-band-roformer/
-      
+
       - name: Prepare Release Artifact (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Create release directory
           New-Item -ItemType Directory -Force -Path "release\mel-band-roformer"
-          
-          # Find and copy CLI executable
           $CliPath = Get-ChildItem -Path build -Filter "bs_roformer-cli.exe" -Recurse -File | Select-Object -First 1
           if ($CliPath) {
             Copy-Item $CliPath.FullName "release\mel-band-roformer\"
           }
-          
-          # Copy DLL files
-          Get-ChildItem -Path build -Filter "*.dll" -Recurse -File | ForEach-Object {
-            Copy-Item $_.FullName "release\mel-band-roformer\" -ErrorAction SilentlyContinue
-          }
-          
-          # List contents
           Write-Host "Release artifact contents:"
           Get-ChildItem "release\mel-band-roformer" | Format-Table Name, Length
       
@@ -425,220 +393,4 @@ jobs:
         with:
           name: BSRoformer-${{ matrix.name }}
           path: release/mel-band-roformer/
-          retention-days: 30
-
-  # ===========================================================================
-  # CUDA Build: Linux (Compile Verification Only)
-  # ===========================================================================
-  build-cuda-linux:
-    name: build-cuda-linux-${{ matrix.cuda_version }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { cuda_version: "11.8.0", os: ubuntu-22.04 }
-          - { cuda_version: "12.9.1", os: ubuntu-latest }
-          - { cuda_version: "13.1.0", os: ubuntu-latest }
-    
-    steps:  
-      - name: Checkout
-        uses: actions/checkout@v4
-      
-      - name: Clone GGML
-        run: git clone --depth 1 https://github.com/ggerganov/ggml.git ggml
-
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@master
-        with:
-          cuda: ${{ matrix.cuda_version }}
-          method: network
-          sub-packages: '["nvcc", "cudart", "thrust"]'
-          non-cuda-sub-packages: '["libcublas", "libcublas-dev"]'
-      
-      - name: Install Dependencies
-        run: |
-          sudo apt-get install -y cmake build-essential ninja-build
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-          
-      - name: Configure
-        run: |
-          ls -ld ggml
-          # Minimal architectures for compile verification
-          # Just verify compilation works, not for distribution
-          CUDA_ARCHS="75;86"
-          echo "Verifying build for CUDA architectures: $CUDA_ARCHS"
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DGGML_DIR=ggml \
-            -DGGML_CUDA=ON \
-            -DGGML_CUDA_FORCE_MMQ=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHS" \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CUDA_COMPILER_LAUNCHER=sccache \
-            -DBSR_BUILD_TESTS=OFF \
-            -DBSR_BUILD_CLI=ON
-            
-      - name: Build
-        run: cmake --build build --config Release -j $(nproc)
-        
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-linux-cuda-${{ matrix.cuda_version }}
-          path: |
-            build/bin/
-            build/lib*/
-            build/*.so
-          retention-days: 7
-      
-      # ----- Prepare Release Artifact -----
-      - name: Prepare Release Artifact
-        run: |
-          # Create release directory
-          mkdir -p release/mel-band-roformer
-          
-          # Find and copy CLI executable
-          CLI_PATH=$(find build -name "bs_roformer-cli" -type f | head -n 1)
-          if [[ -n "$CLI_PATH" ]]; then
-            cp "$CLI_PATH" release/mel-band-roformer/
-            chmod +x release/mel-band-roformer/bs_roformer-cli
-          fi
-          
-          # Copy shared libraries
-          find build -name "*.so*" | while read lib; do
-            cp "$lib" release/mel-band-roformer/ 2>/dev/null || true
-          done
-          
-          # List contents
-          echo "Release artifact contents:"
-          ls -lh release/mel-band-roformer/
-      
-      - name: Upload Release Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: BSRoformer-linux-cuda-${{ matrix.cuda_version }}
-          path: release/mel-band-roformer/
-          retention-days: 30
-
-  # ===========================================================================
-  # CUDA Build: Windows (Compile Only - No GPU for testing)
-  # ===========================================================================
-  build-cuda-windows:
-    name: build-cuda-windows-${{ matrix.cuda_version }}
-    runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        cuda_version: ["11.8.0", "12.9.1", "13.1.0"]
-    
-    env:
-      CUDA_VERSION: ${{ matrix.cuda_version }}
-    
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      
-      - name: Setup MSVC
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Clone GGML
-        run: git clone --depth 1 https://github.com/ggerganov/ggml.git ggml
-      
-      - name: Install CUDA Toolkit
-        if: ${{ matrix.cuda_version != '13.1.0' }}
-        uses: Jimver/cuda-toolkit@master
-        with:
-          cuda: ${{ matrix.cuda_version }}
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-        
-      - name: Install CUDA Toolkit(13.1.0)
-        if: ${{ matrix.cuda_version == '13.1.0' }}
-        uses: Jimver/cuda-toolkit@master
-        with:
-          cuda: ${{ matrix.cuda_version }}
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev", "crt", "nvvm", "visual_studio_integration"]'
-
-      - name: Install Ninja
-        run: choco install ninja -y
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-        
-      - name: Configure and Build
-        shell: pwsh
-        run: |
-          # Consumer GPU architectures:
-          # 61=Pascal (GTX 10), 75=Turing (RTX 20/GTX 16), 86=Ampere (RTX 30), 89=Ada (RTX 40), 120=Blackwell (RTX 50)
-          $cudaVersion = "${{ matrix.cuda_version }}"
-          if ($cudaVersion -match "^11\.") {
-            # CUDA 11.x: Support Pascal (61) to Ada (89)
-            $cudaArchs = "61;75;86;89"
-            $env:CUDAFLAGS = "-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR"
-          } elseif ($cudaVersion -match "^12\.") {
-            # CUDA 12.x: Support Pascal (61) to Blackwell (120) (technically 120 needs 12.8+, keeping unified for now or simple)
-            # Actually 12.x still supports Pascal.
-            $cudaArchs = "61;75;86;89"
-            $env:CUDAFLAGS = ""
-          } else {
-            # CUDA 13+: Drop Pascal (61). Support Turing (75) to Blackwell (120)
-            $cudaArchs = "75;86;89;120"
-            $env:CUDAFLAGS = ""
-          }
-          Write-Host "Building for CUDA architectures: $cudaArchs"
-          
-          cmake -B build -G "Ninja Multi-Config" `
-            -DGGML_DIR=ggml `
-            -DGGML_CUDA=ON `
-            -DGGML_CUDA_FORCE_MMQ=ON `
-            "-DCMAKE_CUDA_ARCHITECTURES=$cudaArchs" `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
-            -DBSR_BUILD_TESTS=OFF `
-            -DBSR_BUILD_CLI=ON
-          cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
-        
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-windows-cuda-${{ matrix.cuda_version }}
-          path: |
-            build/bin/
-            build/Release/
-            build/*.dll
-          retention-days: 7
-      
-      # ----- Prepare Release Artifact -----
-      - name: Prepare Release Artifact
-        shell: pwsh
-        run: |
-          # Create release directory
-          New-Item -ItemType Directory -Force -Path "release\mel-band-roformer"
-          
-          # Find and copy CLI executable
-          $CliPath = Get-ChildItem -Path build -Filter "bs_roformer-cli.exe" -Recurse -File | Select-Object -First 1
-          if ($CliPath) {
-            Copy-Item $CliPath.FullName "release\mel-band-roformer\"
-          }
-          
-          # Copy DLL files
-          Get-ChildItem -Path build -Filter "*.dll" -Recurse -File | ForEach-Object {
-            Copy-Item $_.FullName "release\mel-band-roformer\" -ErrorAction SilentlyContinue
-          }
-          
-          # List contents
-          Write-Host "Release artifact contents:"
-          Get-ChildItem "release\mel-band-roformer" | Format-Table Name, Length
-      
-      - name: Upload Release Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: BSRoformer-windows-cuda-${{ matrix.cuda_version }}
-          path: release\mel-band-roformer\
           retention-days: 30
