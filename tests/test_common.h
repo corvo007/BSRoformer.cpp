@@ -6,11 +6,14 @@
 #include <cstdlib>
 #include <string>
 #include <algorithm>
+#include <filesystem>
 #include <ggml.h>
 #include <ggml-alloc.h>
 #include <ggml-backend.h>
 #include "../src/model.h"
 #include "../src/utils.h"
+
+static constexpr int kBsrTestSkipCode = 77;
 
 //======================================================
 // 配置获取
@@ -34,6 +37,24 @@ inline float GetToleranceRtol() {
     const char* env = std::getenv("BSR_TEST_RTOL");
     return env ? std::stof(env) : 1e-2f;
 }
+
+//======================================================
+// Skip helpers (for tests requiring external data/model)
+//======================================================
+inline bool PathExists(const std::string& path) {
+    std::error_code ec;
+    return std::filesystem::exists(std::filesystem::u8path(path), ec);
+}
+
+inline std::string ActivationPath(const std::string& dir, const std::string& name) {
+    return dir + "/activations/" + name + ".npy";
+}
+
+#define TEST_SKIP(msg) \
+    do { \
+        std::cout << "\n[SKIP] " << msg << std::endl; \
+        return kBsrTestSkipCode; \
+    } while(0)
 
 //======================================================
 // RAII 测试上下文 (TestContext)

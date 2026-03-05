@@ -1,2 +1,11 @@
 build*
 tests/data
+*.wav
+*.mp4
+*.exe
+*.mp3
+*.etl
+*log
+profile.etl.NGENPDB
+profile.etl.EmbeddedPdbs
+*.md

@@ -18,45 +18,38 @@ option(BSR_BUILD_CLI "Build CLI application" ON)
 
 # Strategy: Allow ggml to be shared across multiple projects
 # 1. Check if ggml target already exists (e.g., from parent project like whisper.cpp)
-# 2. If not, try to find ggml via CMAKE_PREFIX_PATH or GGML_DIR
-# 3. If not found, use local ggml (submodule or sibling directory)
+# 2. If not, prefer ggml source via GGML_DIR/submodule/sibling directory
+# 3. If not available, try to find ggml via CMAKE_PREFIX_PATH / package registry
 
 if(NOT TARGET ggml)
-    # Try to find ggml package first (for system-wide or parent project installation)
-    find_package(ggml QUIET CONFIG)
-    
-    if(NOT ggml_FOUND)
-        # ggml not found as package, look for source directory
-        # Priority 1: GGML_DIR variable (explicitly set by user or parent project)
-        # Priority 2: Submodule in ggml/
-        # Priority 3: Sibling directory ../ggml
-        
-        if(DEFINED GGML_DIR)
-            set(GGML_PATH "${GGML_DIR}")
-            message(STATUS "Using GGML from GGML_DIR: ${GGML_PATH}")
-        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ggml/CMakeLists.txt")
-            set(GGML_PATH "${CMAKE_CURRENT_SOURCE_DIR}/ggml")
-            message(STATUS "Using GGML from submodule: ${GGML_PATH}")
-        elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../ggml/CMakeLists.txt")
-            set(GGML_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../ggml")
-            message(STATUS "Using GGML from sibling directory: ${GGML_PATH}")
-        else()
-            message(FATAL_ERROR 
-                "ggml not found. Please either:\n"
-                "  1. Add ggml as submodule: git submodule add https://github.com/ggerganov/ggml.git\n"
-                "  2. Clone ggml to parent directory: cd .. && git clone https://github.com/ggerganov/ggml.git\n"
-                "  3. Set GGML_DIR to point to ggml source: cmake -DGGML_DIR=/path/to/ggml\n"
-                "  4. Let parent project provide ggml target"
-            )
-        endif()
-        
+    # Prefer ggml source directory if available. This avoids picking up broken/partial ggml
+    # package configs from build directories or the user package registry.
+    #
+    # Priority 1: GGML_DIR variable (explicitly set by user or parent project)
+    # Priority 2: Submodule in ggml/
+    # Priority 3: Sibling directory ../ggml
+
+    if(DEFINED GGML_DIR AND EXISTS "${GGML_DIR}/CMakeLists.txt")
+        set(GGML_PATH "${GGML_DIR}")
+        message(STATUS "Using GGML from GGML_DIR: ${GGML_PATH}")
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ggml/CMakeLists.txt")
+        set(GGML_PATH "${CMAKE_CURRENT_SOURCE_DIR}/ggml")
+        message(STATUS "Using GGML from submodule: ${GGML_PATH}")
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../ggml/CMakeLists.txt")
+        set(GGML_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../ggml")
+        message(STATUS "Using GGML from sibling directory: ${GGML_PATH}")
+    else()
+        # Fall back to finding an installed package (system-wide install or parent toolchain)
+        find_package(ggml REQUIRED CONFIG)
+        message(STATUS "Using GGML from installed package")
+    endif()
+
+    if(DEFINED GGML_PATH)
         # Force ggml to build as static libraries
         set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
 
         # Add ggml as subdirectory
         add_subdirectory(${GGML_PATH} ggml EXCLUDE_FROM_ALL)
-    else()
-        message(STATUS "Using GGML from installed package")
     endif()
 else()
     message(STATUS "Using GGML target from parent project")
