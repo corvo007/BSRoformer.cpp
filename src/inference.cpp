@@ -70,8 +70,9 @@ static bool WantCudaPinnedStaging() {
 
     const char* env = std::getenv("BSR_CUDA_PINNED_STAGING");
     if (!env || !*env) {
-        // Default: enabled for CUDA to avoid pageable async staging growth.
-        return true;
+        // Default: disabled to reduce host RAM usage. Set to 1 to enable pinned host staging buffers for
+        // H2D/D2H copies (can improve throughput, at the cost of extra locked memory).
+        return false;
     }
 
     char* end = nullptr;
