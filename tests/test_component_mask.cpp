@@ -8,6 +8,14 @@ int main(int argc, char* argv[]) {
     
     if (argc > 1) model_path = argv[1];
     if (argc > 2) data_dir = argv[2];
+
+    if (!PathExists(model_path)) {
+        TEST_SKIP("Model file not found: " + model_path + " (set BSR_MODEL_PATH)");
+    }
+    if (!PathExists(ActivationPath(data_dir, "before_mask_est")) ||
+        !PathExists(ActivationPath(data_dir, "mask_est0"))) {
+        TEST_SKIP("Test data not found under: " + data_dir + " (set BSR_TEST_DATA_DIR)");
+    }
     
     LOG_STEP(1, 4, "Loading model from " + model_path);
     BSRoformer model;

@@ -1,14 +1,4 @@
-#include <iostream>
-#include <vector>
-#include <cmath>
-#include <string>
-#include <cstring>
-#include <cstdlib>
-#include <ggml.h>
-#include <ggml-alloc.h>
-#include <ggml-backend.h>
-#include "../src/model.h"
-#include "../src/utils.h"
+#include "test_common.h"
 
 /**
  * test_component_layers.cpp
@@ -16,16 +6,6 @@
  * Verifies Transformer layers against golden tensors from export_debug.py
  * Copied from tests_old/test_component_layers.cpp with env var support
  */
-
-std::string GetModelPath() {
-    const char* env = std::getenv("BSR_MODEL_PATH");
-    return env ? env : "bs_roformer.gguf";
-}
-
-std::string GetTestDataDir() {
-    const char* env = std::getenv("BSR_TEST_DATA_DIR");
-    return env ? env : ".";
-}
 
 int main(int argc, char* argv[]) {
     std::cout << "========================================" << std::endl;
@@ -37,6 +17,14 @@ int main(int argc, char* argv[]) {
     
     if (argc > 1) model_path = argv[1];
     if (argc > 2) debug_dir = argv[2];
+
+    if (!PathExists(model_path)) {
+        TEST_SKIP("Model file not found: " + model_path + " (set BSR_MODEL_PATH)");
+    }
+    if (!PathExists(ActivationPath(debug_dir, "after_band_split")) ||
+        !PathExists(ActivationPath(debug_dir, "before_mask_est"))) {
+        TEST_SKIP("Test data not found under: " + debug_dir + " (set BSR_TEST_DATA_DIR)");
+    }
     
     try {
         // 1. Load Model

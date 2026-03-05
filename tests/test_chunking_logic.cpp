@@ -43,9 +43,9 @@ int main(int argc, char* argv[]) {
     }
     
     if (!in_ptr) {
-        // Just print absolute path hint for debugging
-        std::cout << "[SKIP] chunk_in.npy not found in " << data_dir << " or " << in_path << std::endl;
-        return 0; 
+         // Just print absolute path hint for debugging
+         std::cout << "[SKIP] chunk_in.npy not found in " << data_dir << " or " << in_path << std::endl;
+         return kBsrTestSkipCode;
     }
     
     auto [out_ptr, out_shape] = utils::load_npy(out_path);
@@ -60,7 +60,7 @@ int main(int argc, char* argv[]) {
     if (!out_ptr) {
          std::cout << "[SKIP] chunk_out.npy not found" << std::endl;
          utils::free_npy_data(in_ptr);
-         return 0;
+         return kBsrTestSkipCode;
     }
     
     std::vector<float> input_vec(utils::shape_nelements(in_shape));

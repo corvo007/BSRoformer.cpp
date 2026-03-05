@@ -8,6 +8,10 @@ int main(int argc, char** argv) {
     // 1. Load Model to get parameters
     std::string model_path = GetModelPath();
     std::cout << "Loading model params from: " << model_path << std::endl;
+
+    if (!PathExists(model_path)) {
+        TEST_SKIP("Model file not found: " + model_path + " (set BSR_MODEL_PATH)");
+    }
     
     // We only need the model to read parameters (n_fft, etc.) from GGUF
     // We don't need to allocate the full graph or weights.
@@ -29,6 +33,12 @@ int main(int argc, char** argv) {
     // 2. Load Data
     std::string data_dir = GetTestDataDir();
     std::cout << "Loading test data from: " << data_dir << std::endl;
+
+    if (!PathExists(ActivationPath(data_dir, "input_audio")) ||
+        !PathExists(ActivationPath(data_dir, "stft_raw")) ||
+        !PathExists(ActivationPath(data_dir, "istft_raw"))) {
+        TEST_SKIP("Test data not found under: " + data_dir + " (set BSR_TEST_DATA_DIR)");
+    }
     
     GoldenTensor input_audio(data_dir, "input_audio"); // [batch, channels, samples]
     GoldenTensor expected_stft(data_dir, "stft_raw"); // [batch, channels, freq, time, 2]
