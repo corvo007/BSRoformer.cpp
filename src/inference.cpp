@@ -5,6 +5,7 @@
 #include <iostream>
 #include <complex>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <ggml.h>
@@ -23,6 +24,22 @@
 #include <cstdlib>
 #include <limits>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <psapi.h>
+#endif
+
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#include "ggml-cuda.h"
+#include <cuda_runtime.h>
+#endif
+
 using Complex = std::complex<float>;
 static constexpr const char* kInferenceCancelledMessage = "Inference cancelled";
 
@@ -33,6 +50,171 @@ static int GetStreamTimingLevel();
 static void LogStreamTimingLine(const std::string& line);
 
 static std::mutex g_stream_timing_mutex;
+
+static bool WantCudaHostRegister() {
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    const char* env = std::getenv("GGML_CUDA_REGISTER_HOST");
+    if (!env || !*env) return false;
+    // Treat "0" as disabled.
+    return std::strcmp(env, "0") != 0;
+#else
+    return false;
+#endif
+}
+
+static bool WantCudaPinnedStaging() {
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (std::getenv("GGML_CUDA_NO_PINNED") != nullptr) {
+        return false;
+    }
+
+    const char* env = std::getenv("BSR_CUDA_PINNED_STAGING");
+    if (!env || !*env) {
+        // Default: enabled for CUDA to avoid pageable async staging growth.
+        return true;
+    }
+
+    char* end = nullptr;
+    long v = std::strtol(env, &end, 10);
+    if (end == env) {
+        // Non-numeric but set => enabled
+        return true;
+    }
+    return v > 0;
+#else
+    return false;
+#endif
+}
+
+static void* TryCudaMallocHost(size_t bytes) {
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (bytes == 0) return nullptr;
+    void* ptr = nullptr;
+    cudaError_t err = cudaMallocHost(&ptr, bytes);
+    if (err != cudaSuccess) {
+        // clear the error
+        (void) cudaGetLastError();
+        return nullptr;
+    }
+    return ptr;
+#else
+    (void) bytes;
+    return nullptr;
+#endif
+}
+
+static void TryCudaFreeHost(void* ptr) {
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (ptr == nullptr) return;
+    cudaError_t err = cudaFreeHost(ptr);
+    if (err != cudaSuccess) {
+        // clear the error
+        (void) cudaGetLastError();
+    }
+#else
+    (void) ptr;
+#endif
+}
+
+static bool TryCudaHostRegister(void* buffer, size_t bytes, unsigned flags) {
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (buffer == nullptr || bytes == 0) return false;
+    cudaError_t err = cudaHostRegister(buffer, bytes, flags);
+    if (err != cudaSuccess) {
+        // clear the error
+        (void) cudaGetLastError();
+        return false;
+    }
+    return true;
+#else
+    (void) buffer;
+    (void) bytes;
+    (void) flags;
+    return false;
+#endif
+}
+
+static void TryCudaHostUnregister(void* buffer) {
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (buffer == nullptr) return;
+    cudaError_t err = cudaHostUnregister(buffer);
+    if (err != cudaSuccess) {
+        // clear the error
+        (void) cudaGetLastError();
+    }
+#else
+    (void) buffer;
+#endif
+}
+
+static void EnsureCudaHostRegistered(void* buffer,
+                                     size_t bytes,
+                                     unsigned flags,
+                                     void*& reg_ptr,
+                                     size_t& reg_bytes) {
+    if (!WantCudaHostRegister()) return;
+    if (buffer == nullptr || bytes == 0) return;
+
+    if (reg_ptr == buffer && reg_bytes == bytes) {
+        return;
+    }
+
+    if (reg_ptr != nullptr) {
+        TryCudaHostUnregister(reg_ptr);
+        reg_ptr = nullptr;
+        reg_bytes = 0;
+    }
+
+    if (TryCudaHostRegister(buffer, bytes, flags)) {
+        reg_ptr = buffer;
+        reg_bytes = bytes;
+    }
+}
+
+static int GetStreamMemLevel() {
+    const char* env = std::getenv("BSR_STREAM_MEM");
+    if (!env || !*env) return 0;
+
+    char* end = nullptr;
+    long v = std::strtol(env, &end, 10);
+    if (end == env) {
+        // Non-numeric but set => enabled
+        return 1;
+    }
+    if (v <= 0) return 0;
+    if (v > 3) v = 3;
+    return static_cast<int>(v);
+}
+
+struct ProcessMemInfo {
+    size_t working_set_bytes = 0;
+    size_t private_bytes = 0;
+};
+
+static ProcessMemInfo GetProcessMemInfo() {
+    ProcessMemInfo info{};
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc))) {
+        info.working_set_bytes = static_cast<size_t>(pmc.WorkingSetSize);
+        info.private_bytes = static_cast<size_t>(pmc.PrivateUsage);
+    }
+#endif
+    return info;
+}
+
+Inference::ChunkState::~ChunkState() {
+    if (cuda_reg_stft_ptr != nullptr) {
+        TryCudaHostUnregister(cuda_reg_stft_ptr);
+        cuda_reg_stft_ptr = nullptr;
+        cuda_reg_stft_bytes = 0;
+    }
+    if (cuda_reg_mask_ptr != nullptr) {
+        TryCudaHostUnregister(cuda_reg_mask_ptr);
+        cuda_reg_mask_ptr = nullptr;
+        cuda_reg_mask_bytes = 0;
+    }
+}
 
 static int GetMaskStatsLevel() {
     const char* env = std::getenv("BSR_MASK_STATS");
@@ -143,6 +325,17 @@ int Inference::GetNumStems() const {
 }
 
 Inference::~Inference() {
+    if (cuda_pinned_in_ != nullptr) {
+        TryCudaFreeHost(cuda_pinned_in_);
+        cuda_pinned_in_ = nullptr;
+        cuda_pinned_in_bytes_ = 0;
+    }
+    if (cuda_pinned_out_ != nullptr) {
+        TryCudaFreeHost(cuda_pinned_out_);
+        cuda_pinned_out_ = nullptr;
+        cuda_pinned_out_bytes_ = 0;
+    }
+
     if (allocr_) ggml_gallocr_free(allocr_);
     if (ctx_) ggml_free(ctx_);
     // gf_ is part of ctx_, tensor pointers are part of ctx_
@@ -168,6 +361,17 @@ bool Inference::EnsureGraph(int n_frames) {
         cached_n_frames_ = -1;
         uploaded_pos_n_frames_ = -1;
         ctx_mem_.clear();
+
+        if (cuda_pinned_in_ != nullptr) {
+            TryCudaFreeHost(cuda_pinned_in_);
+            cuda_pinned_in_ = nullptr;
+            cuda_pinned_in_bytes_ = 0;
+        }
+        if (cuda_pinned_out_ != nullptr) {
+            TryCudaFreeHost(cuda_pinned_out_);
+            cuda_pinned_out_ = nullptr;
+            cuda_pinned_out_bytes_ = 0;
+        }
     };
 
     reset_graph_state();
@@ -288,6 +492,27 @@ bool Inference::EnsureGraph(int n_frames) {
             continue;
         }
 
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+        {
+            ggml_backend_t backend = model_ ? model_->GetBackend() : nullptr;
+            if (backend && ggml_backend_is_cuda(backend) && WantCudaPinnedStaging()) {
+                const size_t in_bytes = ggml_nbytes(input_tensor_);
+                if (cuda_pinned_in_bytes_ != in_bytes) {
+                    if (cuda_pinned_in_ != nullptr) TryCudaFreeHost(cuda_pinned_in_);
+                    cuda_pinned_in_ = TryCudaMallocHost(in_bytes);
+                    cuda_pinned_in_bytes_ = (cuda_pinned_in_ != nullptr) ? in_bytes : 0;
+                }
+
+                const size_t out_bytes = ggml_nbytes(mask_out_tensor_);
+                if (cuda_pinned_out_bytes_ != out_bytes) {
+                    if (cuda_pinned_out_ != nullptr) TryCudaFreeHost(cuda_pinned_out_);
+                    cuda_pinned_out_ = TryCudaMallocHost(out_bytes);
+                    cuda_pinned_out_bytes_ = (cuda_pinned_out_ != nullptr) ? out_bytes : 0;
+                }
+            }
+        }
+#endif
+
         cached_n_frames_ = n_frames;
         return true;
     }
@@ -309,14 +534,26 @@ void Inference::ComputeSTFT(const std::vector<float>& input_audio,
     stft_outputs.resize(channels);
     int n_samples = input_audio.size() / channels;
 
-    for (int ch = 0; ch < channels; ++ch) {
-        std::vector<float> channel_audio(n_samples);
-        for (int i = 0; i < n_samples; ++i) {
-            channel_audio[i] = input_audio[ch + i * channels];
-        }
+    struct StftScratch {
+        std::vector<float> ch0;
+        std::vector<float> ch1;
+    };
+    static thread_local StftScratch tls;
 
+    tls.ch0.resize(n_samples);
+    tls.ch1.resize(n_samples);
+
+    for (int i = 0; i < n_samples; ++i) {
+        const size_t base = static_cast<size_t>(i) * channels;
+        tls.ch0[i] = input_audio[base + 0];
+        tls.ch1[i] = input_audio[base + 1];
+    }
+
+    const float* channel_ptrs[2] = { tls.ch0.data(), tls.ch1.data() };
+
+    for (int ch = 0; ch < channels; ++ch) {
         stft_outputs[ch].resize(n_freq * (n_samples / hop_length + 5) * 2);
-        stft::compute_stft(channel_audio.data(), n_samples, n_fft, hop_length, win_length, 
+        stft::compute_stft(channel_ptrs[ch], n_samples, n_fft, hop_length, win_length,
                            hann_window_.data(), true, stft_outputs[ch].data(), &n_frames);
     }
 }
@@ -370,8 +607,20 @@ void Inference::PostProcessAndISTFT(const std::vector<float>& mask_output,
     output_audio.resize(num_stems);
 
     int total_freq_stereo = n_freq * channels;
-    std::vector<Complex> masks_summed(static_cast<size_t>(total_freq_stereo) * static_cast<size_t>(n_frames));
-    std::vector<float> istft_in(static_cast<size_t>(n_freq) * static_cast<size_t>(n_frames) * 2);
+
+    struct PostProcessScratch {
+        std::vector<Complex> masks_summed;
+        std::vector<float> istft_in;
+        std::vector<float> out_ch0;
+        std::vector<float> out_ch1;
+    };
+    static thread_local PostProcessScratch tls;
+
+    tls.masks_summed.resize(static_cast<size_t>(total_freq_stereo) * static_cast<size_t>(n_frames));
+    tls.istft_in.resize(static_cast<size_t>(n_freq) * static_cast<size_t>(n_frames) * 2);
+
+    auto& masks_summed = tls.masks_summed;
+    auto& istft_in = tls.istft_in;
     
     // Process each stem
     for (int stem = 0; stem < num_stems; ++stem) {
@@ -409,10 +658,10 @@ void Inference::PostProcessAndISTFT(const std::vector<float>& mask_output,
             }
         }
 
-        std::vector<std::vector<float>> output_channels(channels);
         int n_samples_out = 0;
 
         for (int ch = 0; ch < channels; ++ch) {
+            std::vector<float>& output_channel = (ch == 0) ? tls.out_ch0 : tls.out_ch1;
             for (int f = 0; f < n_freq; ++f) {
                 int freq_stereo_idx = f * channels + ch;
                 for (int t = 0; t < n_frames; ++t) {
@@ -438,18 +687,17 @@ void Inference::PostProcessAndISTFT(const std::vector<float>& mask_output,
             }
             
             int approx_len = (n_frames - 1) * hop_length + n_fft;
-            output_channels[ch].resize(approx_len + n_fft); 
+            output_channel.resize(approx_len + n_fft);
             stft::compute_istft(istft_in.data(), n_freq, n_frames, n_fft, hop_length, win_length, 
-                                hann_window_.data(), true, approx_len, output_channels[ch].data());
+                                hann_window_.data(), true, approx_len, output_channel.data());
             if (ch == 0) n_samples_out = approx_len;
-            output_channels[ch].resize(n_samples_out);
+            output_channel.resize(n_samples_out);
         }
 
         output_audio[stem].resize(channels * n_samples_out);
         for (int i = 0; i < n_samples_out; ++i) {
-            for (int ch = 0; ch < channels; ++ch) {
-                output_audio[stem][ch + i * channels] = output_channels[ch][i];
-            }
+            output_audio[stem][0 + i * channels] = tls.out_ch0[i];
+            output_audio[stem][1 + i * channels] = tls.out_ch1[i];
         }
     }
 }
@@ -467,18 +715,117 @@ std::vector<std::vector<float>> Inference::Process(const std::vector<float>& inp
 // Pipeline Stages
 // =================================================================================================
 
-std::shared_ptr<Inference::ChunkState> Inference::PreProcessChunk(std::vector<float> chunk_audio, int64_t id) {
-    auto state = std::make_shared<ChunkState>();
-    state->id = id;
-    state->input_audio = std::move(chunk_audio);
+void Inference::PreProcessChunkInto(ChunkState& state, std::vector<float> chunk_audio, int64_t id) {
+    state.id = id;
+    state.input_audio = std::move(chunk_audio);
+    state.mask_output.clear();
+    state.n_frames = 0;
 
-    if (state->input_audio.empty()) return state;
+    // Preserve per-stem output buffers to avoid per-chunk alloc/free churn (can make Windows Private Bytes climb).
+    const int num_stems = model_ ? model_->GetNumStems() : 0;
+    if (num_stems > 0) {
+        if (state.final_audio.size() != static_cast<size_t>(num_stems)) {
+            state.final_audio.resize(static_cast<size_t>(num_stems));
+        }
+        for (auto& stem_audio : state.final_audio) {
+            stem_audio.clear();
+        }
+    } else {
+        state.final_audio.clear();
+    }
+
+    if (state.input_audio.empty()) {
+        state.stft_flattened.clear();
+        return;
+    }
 
     // 1. STFT
-    ComputeSTFT(state->input_audio, state->stft_outputs, state->n_frames);
+    ComputeSTFT(state.input_audio, state.stft_outputs, state.n_frames);
+
+    const size_t required_stft = static_cast<size_t>(state.n_frames) * static_cast<size_t>(model_->GetTotalDimInput());
+
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    ggml_backend_t backend = model_ ? model_->GetBackend() : nullptr;
+    if (backend && ggml_backend_is_cuda(backend)) {
+        // If a resize might reallocate, unregister first (must not free registered memory).
+        if (state.cuda_reg_stft_ptr != nullptr && state.stft_flattened.capacity() < required_stft) {
+            TryCudaHostUnregister(state.cuda_reg_stft_ptr);
+            state.cuda_reg_stft_ptr = nullptr;
+            state.cuda_reg_stft_bytes = 0;
+        }
+    }
+#endif
 
     // 2. Prepare Input
-    PrepareModelInput(state->stft_outputs, state->n_frames, state->stft_flattened);
+    PrepareModelInput(state.stft_outputs, state.n_frames, state.stft_flattened);
+
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (backend && ggml_backend_is_cuda(backend) && !state.stft_flattened.empty()) {
+        EnsureCudaHostRegistered(state.stft_flattened.data(),
+                                 state.stft_flattened.size() * sizeof(float),
+                                 cudaHostRegisterPortable | cudaHostRegisterReadOnly,
+                                 state.cuda_reg_stft_ptr,
+                                 state.cuda_reg_stft_bytes);
+    }
+#endif
+}
+
+void Inference::PreProcessChunkInPlace(ChunkState& state) {
+    state.mask_output.clear();
+    state.n_frames = 0;
+
+    // Preserve per-stem output buffers to avoid per-chunk alloc/free churn (can make Windows Private Bytes climb).
+    const int num_stems = model_ ? model_->GetNumStems() : 0;
+    if (num_stems > 0) {
+        if (state.final_audio.size() != static_cast<size_t>(num_stems)) {
+            state.final_audio.resize(static_cast<size_t>(num_stems));
+        }
+        for (auto& stem_audio : state.final_audio) {
+            stem_audio.clear();
+        }
+    } else {
+        state.final_audio.clear();
+    }
+
+    if (state.input_audio.empty()) {
+        state.stft_flattened.clear();
+        return;
+    }
+
+    // 1. STFT
+    ComputeSTFT(state.input_audio, state.stft_outputs, state.n_frames);
+
+    const size_t required_stft = static_cast<size_t>(state.n_frames) * static_cast<size_t>(model_->GetTotalDimInput());
+
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    ggml_backend_t backend = model_ ? model_->GetBackend() : nullptr;
+    if (backend && ggml_backend_is_cuda(backend)) {
+        // If a resize might reallocate, unregister first (must not free registered memory).
+        if (state.cuda_reg_stft_ptr != nullptr && state.stft_flattened.capacity() < required_stft) {
+            TryCudaHostUnregister(state.cuda_reg_stft_ptr);
+            state.cuda_reg_stft_ptr = nullptr;
+            state.cuda_reg_stft_bytes = 0;
+        }
+    }
+#endif
+
+    // 2. Prepare Input
+    PrepareModelInput(state.stft_outputs, state.n_frames, state.stft_flattened);
+
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (backend && ggml_backend_is_cuda(backend) && !state.stft_flattened.empty()) {
+        EnsureCudaHostRegistered(state.stft_flattened.data(),
+                                 state.stft_flattened.size() * sizeof(float),
+                                 cudaHostRegisterPortable | cudaHostRegisterReadOnly,
+                                 state.cuda_reg_stft_ptr,
+                                 state.cuda_reg_stft_bytes);
+    }
+#endif
+}
+
+std::shared_ptr<Inference::ChunkState> Inference::PreProcessChunk(std::vector<float> chunk_audio, int64_t id) {
+    auto state = std::make_shared<ChunkState>();
+    PreProcessChunkInto(*state, std::move(chunk_audio), id);
 
     return state;
 }
@@ -500,6 +847,18 @@ void Inference::RunInference(std::shared_ptr<ChunkState> state) {
 
     int n_bands = model_->GetNumBands();
     int n_frames = state->n_frames;
+
+    const size_t input_bytes = ggml_nbytes(input_tensor_);
+    const size_t mask_bytes = ggml_nbytes(mask_out_tensor_);
+
+    const bool use_pinned_staging =
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+        (backend && ggml_backend_is_cuda(backend) && WantCudaPinnedStaging() &&
+         cuda_pinned_in_ != nullptr && cuda_pinned_in_bytes_ >= input_bytes &&
+         cuda_pinned_out_ != nullptr && cuda_pinned_out_bytes_ >= mask_bytes);
+#else
+        false;
+#endif
 
     // Prepare position data
     // Use cached vectors to avoid allocation
@@ -524,7 +883,13 @@ void Inference::RunInference(std::shared_ptr<ChunkState> state) {
     using clock = std::chrono::high_resolution_clock;
 
     auto upload_inputs = [&]() {
-        ggml_backend_tensor_set_async(backend, input_tensor_, state->stft_flattened.data(), 0, ggml_nbytes(input_tensor_));
+        const void* input_src = state->stft_flattened.data();
+        if (use_pinned_staging) {
+            std::memcpy(cuda_pinned_in_, input_src, input_bytes);
+            input_src = cuda_pinned_in_;
+        }
+
+        ggml_backend_tensor_set_async(backend, input_tensor_, input_src, 0, input_bytes);
 
         // Always upload RoPE position tensors.
         //
@@ -534,6 +899,33 @@ void Inference::RunInference(std::shared_ptr<ChunkState> state) {
         ggml_backend_tensor_set_async(backend, pos_time_, pos_time_data_.data(), 0, ggml_nbytes(pos_time_));
         ggml_backend_tensor_set_async(backend, pos_freq_, pos_freq_data_.data(), 0, ggml_nbytes(pos_freq_));
         uploaded_pos_n_frames_ = n_frames;
+    };
+
+    auto prepare_mask_output = [&]() {
+        const size_t required_elems = static_cast<size_t>(ggml_nelements(mask_out_tensor_));
+
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+        if (backend && ggml_backend_is_cuda(backend)) {
+            // If a resize might reallocate, unregister first (must not free registered memory).
+            if (state->cuda_reg_mask_ptr != nullptr && state->mask_output.capacity() < required_elems) {
+                TryCudaHostUnregister(state->cuda_reg_mask_ptr);
+                state->cuda_reg_mask_ptr = nullptr;
+                state->cuda_reg_mask_bytes = 0;
+            }
+        }
+#endif
+
+        state->mask_output.resize(required_elems);
+
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+        if (backend && ggml_backend_is_cuda(backend) && !state->mask_output.empty()) {
+            EnsureCudaHostRegistered(state->mask_output.data(),
+                                     state->mask_output.size() * sizeof(float),
+                                     cudaHostRegisterPortable,
+                                     state->cuda_reg_mask_ptr,
+                                     state->cuda_reg_mask_bytes);
+        }
+#endif
     };
 
     // Debug timing breakdown (adds extra syncs; only enable when investigating GPU bubbles).
@@ -547,9 +939,17 @@ void Inference::RunInference(std::shared_ptr<ChunkState> state) {
         ggml_backend_synchronize(backend);
         const auto t2 = clock::now();
 
-        state->mask_output.resize(ggml_nelements(mask_out_tensor_));
-        ggml_backend_tensor_get_async(backend, mask_out_tensor_, state->mask_output.data(), 0, ggml_nbytes(mask_out_tensor_));
+        prepare_mask_output();
+        void* mask_dst = state->mask_output.data();
+        if (use_pinned_staging) {
+            mask_dst = cuda_pinned_out_;
+        }
+
+        ggml_backend_tensor_get_async(backend, mask_out_tensor_, mask_dst, 0, mask_bytes);
         ggml_backend_synchronize(backend);
+        if (use_pinned_staging) {
+            std::memcpy(state->mask_output.data(), cuda_pinned_out_, mask_bytes);
+        }
         const auto t3 = clock::now();
 
         const auto h2d_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
@@ -574,11 +974,21 @@ void Inference::RunInference(std::shared_ptr<ChunkState> state) {
         // Avoid reallocation if size roughly matches?
         // ggml_nelements(mask_out_tensor_) is fixed for a given n_frames.
         // state->mask_output is a vector. resize handles it (no op if same size).
-        state->mask_output.resize(ggml_nelements(mask_out_tensor_));
-        ggml_backend_tensor_get_async(backend, mask_out_tensor_, state->mask_output.data(), 0, ggml_nbytes(mask_out_tensor_));
+        prepare_mask_output();
+
+        void* mask_dst = state->mask_output.data();
+        if (use_pinned_staging) {
+            mask_dst = cuda_pinned_out_;
+        }
+
+        ggml_backend_tensor_get_async(backend, mask_out_tensor_, mask_dst, 0, mask_bytes);
 
         // Ensure H2D copies, compute, and D2H copy completed before post-processing consumes mask_output.
         ggml_backend_synchronize(backend);
+
+        if (use_pinned_staging) {
+            std::memcpy(state->mask_output.data(), cuda_pinned_out_, mask_bytes);
+        }
     }
 
     const int mask_stats_level = GetMaskStatsLevel();
@@ -1359,8 +1769,82 @@ bool Inference::OverlapAddStreamer::TryScheduleNext(ScheduledChunk& out) {
     return true;
 }
 
-std::vector<std::vector<float>> Inference::OverlapAddStreamer::ConsumeScheduled(const ScheduledChunk& scheduled,
-                                                                                const std::vector<std::vector<float>>& chunk_out) {
+bool Inference::OverlapAddStreamer::TryScheduleNextMeta(ScheduledChunk& out) {
+    out = ScheduledChunk{};
+
+    if (!decided_pad_) {
+        // Not enough input to decide do_pad yet.
+        return false;
+    }
+
+    if (input_finalized_) {
+        if (schedule_offset_ >= total_length_padded_) return false;
+
+        const int64_t remaining = total_length_padded_ - schedule_offset_;
+        const int part_len = static_cast<int>(std::min<int64_t>(chunk_size_, remaining));
+        if (part_len <= 0) return false;
+
+        out.offset = schedule_offset_;
+        out.part_len = part_len;
+        out.is_first = (out.offset == 0);
+        out.is_last = (out.offset + step_ >= total_length_padded_);
+        schedule_offset_ += step_;
+        return true;
+    }
+
+    const int64_t available_padded = AvailablePaddedSamples();
+    if (schedule_offset_ + chunk_size_ > available_padded) return false;
+
+    out.offset = schedule_offset_;
+    out.part_len = chunk_size_;
+    out.is_first = (out.offset == 0);
+    out.is_last = false;
+    schedule_offset_ += step_;
+    return true;
+}
+
+void Inference::OverlapAddStreamer::MaterializeChunkInput(const ScheduledChunk& scheduled, std::vector<float>& dst) const {
+    if (scheduled.part_len <= 0) {
+        dst.clear();
+        return;
+    }
+
+    const size_t total_floats = static_cast<size_t>(chunk_size_) * kChannels;
+    dst.resize(total_floats);
+    std::fill(dst.begin(), dst.end(), 0.0f);
+
+    const int64_t rel_samples = scheduled.offset - input_base_;
+    if (rel_samples < 0) {
+        throw std::runtime_error("Internal error: scheduled.offset < input_base_ in MaterializeChunkInput");
+    }
+
+    const size_t start_float = input_offset_ + static_cast<size_t>(rel_samples) * kChannels;
+    const size_t copy_floats = static_cast<size_t>(scheduled.part_len) * kChannels;
+    if (start_float + copy_floats > input_buffer_.size()) {
+        throw std::runtime_error("Internal error: input buffer underrun in MaterializeChunkInput");
+    }
+
+    std::memcpy(dst.data(), input_buffer_.data() + start_float, copy_floats * sizeof(float));
+
+    // Pad short chunk if needed: matches batch ProcessOverlapAdd.
+    if (scheduled.part_len < chunk_size_) {
+        int pad_amount = chunk_size_ - scheduled.part_len;
+        if (scheduled.part_len > chunk_size_ / 2 + 1) {
+            for (int k = 0; k < pad_amount; ++k) {
+                int src_idx = scheduled.part_len - 2 - k;
+                if (src_idx < 0) src_idx = 0;
+                dst[static_cast<size_t>(scheduled.part_len + k) * kChannels + 0] =
+                    dst[static_cast<size_t>(src_idx) * kChannels + 0];
+                dst[static_cast<size_t>(scheduled.part_len + k) * kChannels + 1] =
+                    dst[static_cast<size_t>(src_idx) * kChannels + 1];
+            }
+        }
+    }
+}
+
+void Inference::OverlapAddStreamer::ConsumeScheduledAppend(const ScheduledChunk& scheduled,
+                                                          const std::vector<std::vector<float>>& chunk_out,
+                                                          std::vector<std::vector<float>>& out_acc) {
     if (scheduled.offset != current_offset_) {
         throw std::runtime_error("Error: ConsumeScheduled() called out of order (offset mismatch)");
     }
@@ -1376,13 +1860,18 @@ std::vector<std::vector<float>> Inference::OverlapAddStreamer::ConsumeScheduled(
         remaining_limit = std::max<int64_t>(0, total_input_samples_ - emitted_output_samples_);
     }
 
-    auto ready = EmitReadyOutput(ready_samples, remaining_limit);
+    AppendReadyOutput(ready_samples, remaining_limit, out_acc);
 
     ShiftWindowByStep();
     current_offset_ += step_;
     produced_padded_samples_ += step_;
     DropInputPrefixUpTo(current_offset_);
+}
 
+std::vector<std::vector<float>> Inference::OverlapAddStreamer::ConsumeScheduled(const ScheduledChunk& scheduled,
+                                                                                const std::vector<std::vector<float>>& chunk_out) {
+    std::vector<std::vector<float>> ready;
+    ConsumeScheduledAppend(scheduled, chunk_out, ready);
     return ready;
 }
 
@@ -1562,15 +2051,14 @@ void Inference::OverlapAddStreamer::AccumulateChunk(const std::vector<std::vecto
                                                     bool is_last) {
     if (part_len <= 0) return;
 
-    std::vector<float> window = window_base_; // Copy
-    if (is_first) {
-        for (int k = 0; k < fade_size_; ++k) window[k] = 1.0f;
-    } else if (is_last) {
-        for (int k = 0; k < fade_size_; ++k) window[chunk_size_ - 1 - k] = 1.0f;
-    }
-
     for (int k = 0; k < part_len; ++k) {
-        float w = window[k];
+        float w = window_base_[k];
+        if (is_first && k < fade_size_) {
+            w = 1.0f;
+        }
+        if (is_last && k >= chunk_size_ - fade_size_) {
+            w = 1.0f;
+        }
         size_t chk_idx = static_cast<size_t>(k) * kChannels;
 
         for (int s = 0; s < num_stems_; ++s) {
@@ -1584,9 +2072,10 @@ void Inference::OverlapAddStreamer::AccumulateChunk(const std::vector<std::vecto
     }
 }
 
-std::vector<std::vector<float>> Inference::OverlapAddStreamer::EmitReadyOutput(int ready_samples,
-                                                                               int64_t remaining_output_limit) {
-    if (ready_samples <= 0) return {};
+void Inference::OverlapAddStreamer::AppendReadyOutput(int ready_samples,
+                                                      int64_t remaining_output_limit,
+                                                      std::vector<std::vector<float>>& out_acc) {
+    if (ready_samples <= 0) return;
 
     const int64_t first_abs = produced_padded_samples_;
     const int64_t last_abs = produced_padded_samples_ + ready_samples;
@@ -1598,14 +2087,28 @@ std::vector<std::vector<float>> Inference::OverlapAddStreamer::EmitReadyOutput(i
         out_end = std::min<int64_t>(out_end, out_start + remaining_output_limit);
     }
 
-    if (out_end <= out_start) return {};
+    if (out_end <= out_start) return;
 
     const int64_t out_count = out_end - out_start;
     const int local_start = static_cast<int>(out_start + crop_left_ - first_abs);
 
-    std::vector<std::vector<float>> out(num_stems_);
+    if (out_acc.size() != static_cast<size_t>(num_stems_)) {
+        out_acc.resize(static_cast<size_t>(num_stems_));
+    }
+
+    const size_t append_floats = static_cast<size_t>(out_count) * kChannels;
+    std::array<size_t, 8> base_small{};
+    std::vector<size_t> base_big;
+    size_t* base = nullptr;
+    if (num_stems_ <= static_cast<int>(base_small.size())) {
+        base = base_small.data();
+    } else {
+        base_big.resize(static_cast<size_t>(num_stems_), 0);
+        base = base_big.data();
+    }
     for (int s = 0; s < num_stems_; ++s) {
-        out[s].resize(static_cast<size_t>(out_count) * kChannels);
+        base[s] = out_acc[static_cast<size_t>(s)].size();
+        out_acc[static_cast<size_t>(s)].resize(base[s] + append_floats);
     }
 
     for (int64_t i = 0; i < out_count; ++i) {
@@ -1614,15 +2117,23 @@ std::vector<std::vector<float>> Inference::OverlapAddStreamer::EmitReadyOutput(i
         if (w < 1e-4f) w = 1.0f;
 
         size_t src_idx = static_cast<size_t>(k) * kChannels;
-        size_t dst_idx = static_cast<size_t>(i) * kChannels;
+        size_t dst_off = static_cast<size_t>(i) * kChannels;
 
         for (int s = 0; s < num_stems_; ++s) {
-            out[s][dst_idx + 0] = accum_[s][src_idx + 0] / w;
-            out[s][dst_idx + 1] = accum_[s][src_idx + 1] / w;
+            auto& dst = out_acc[static_cast<size_t>(s)];
+            const size_t dst_idx = base[s] + dst_off;
+            dst[dst_idx + 0] = accum_[s][src_idx + 0] / w;
+            dst[dst_idx + 1] = accum_[s][src_idx + 1] / w;
         }
     }
 
     emitted_output_samples_ += out_count;
+}
+
+std::vector<std::vector<float>> Inference::OverlapAddStreamer::EmitReadyOutput(int ready_samples,
+                                                                               int64_t remaining_output_limit) {
+    std::vector<std::vector<float>> out;
+    AppendReadyOutput(ready_samples, remaining_output_limit, out);
     return out;
 }
 
@@ -1680,14 +2191,7 @@ std::vector<std::vector<float>> Inference::OverlapAddStreamer::Push(const std::v
     ScheduledChunk scheduled;
     while (TryScheduleNext(scheduled)) {
         auto chunk_out = model_func_(scheduled.chunk_in);
-        auto ready = ConsumeScheduled(scheduled, chunk_out);
-
-        if (!ready.empty()) {
-            if (out_acc.empty()) out_acc.resize(ready.size());
-            for (size_t s = 0; s < ready.size(); ++s) {
-                out_acc[s].insert(out_acc[s].end(), ready[s].begin(), ready[s].end());
-            }
-        }
+        ConsumeScheduledAppend(scheduled, chunk_out, out_acc);
     }
 
     return out_acc;
@@ -1707,14 +2211,7 @@ std::vector<std::vector<float>> Inference::OverlapAddStreamer::Finalize() {
     ScheduledChunk scheduled;
     while (TryScheduleNext(scheduled)) {
         auto chunk_out = model_func_(scheduled.chunk_in);
-        auto ready = ConsumeScheduled(scheduled, chunk_out);
-
-        if (!ready.empty()) {
-            if (out_acc.empty()) out_acc.resize(ready.size());
-            for (size_t s = 0; s < ready.size(); ++s) {
-                out_acc[s].insert(out_acc[s].end(), ready[s].begin(), ready[s].end());
-            }
-        }
+        ConsumeScheduledAppend(scheduled, chunk_out, out_acc);
 
         if (emitted_output_samples_ >= total_input_samples_) {
             break;
@@ -1748,7 +2245,11 @@ struct Inference::StreamImpl {
           pipelined_(pipelined),
           pipeline_depth_(GetStreamPipelineDepth()),
           num_stems_(num_stems),
-          timing_level_(GetStreamTimingLevel()) {
+          timing_level_(GetStreamTimingLevel()),
+          mem_level_(GetStreamMemLevel()),
+          chunk_size_(chunk_size),
+          num_overlap_(num_overlap),
+          step_((num_overlap > 0) ? (chunk_size / num_overlap) : 0) {
         if (!engine_) {
             throw std::runtime_error("Error: invalid Inference instance");
         }
@@ -1770,6 +2271,12 @@ struct Inference::StreamImpl {
         q_post_ = std::make_unique<ThreadSafeQueue<Task>>(pipeline_depth_);
         q_done_ = std::make_unique<ThreadSafeQueue<Task>>(pipeline_depth_);
 
+        // Reuse ChunkState allocations to avoid per-chunk heap growth (large vectors like mask_output can fragment).
+        q_free_state_ = std::make_unique<ThreadSafeQueue<std::shared_ptr<ChunkState>>>(pipeline_depth_);
+        for (size_t i = 0; i < pipeline_depth_; ++i) {
+            q_free_state_->Push(std::make_shared<ChunkState>());
+        }
+
         StartThreads();
     }
 
@@ -1778,14 +2285,14 @@ struct Inference::StreamImpl {
         PrintTimingSummaryIfEnabled();
     }
 
-    std::vector<std::vector<float>> Process(const std::vector<float>& input_chunk) {
+    void ProcessInto(const std::vector<float>& input_chunk, std::vector<std::vector<float>>& out_acc) {
         if (!pipelined_) {
-            return serial_->Push(input_chunk);
+            out_acc = serial_->Push(input_chunk);
+            return;
         }
 
         MaybeRethrow();
-
-        std::vector<std::vector<float>> out_acc;
+        ResetOut(out_acc);
 
         // Drain any completed chunks first to avoid backpressure.
         DrainDone(out_acc);
@@ -1804,8 +2311,9 @@ struct Inference::StreamImpl {
                 }
                 --in_flight_;
 
-                auto ready = oa_->ConsumeScheduled(done.scheduled, done.state->final_audio);
-                AppendStems(out_acc, ready);
+                oa_->ConsumeScheduledAppend(done.scheduled, done.state->final_audio, out_acc);
+                MaybeLogMem("wait", done);
+                RecycleState(std::move(done.state));
 
                 DrainDone(out_acc);
                 MaybeRethrow();
@@ -1817,12 +2325,18 @@ struct Inference::StreamImpl {
 
         DrainDone(out_acc);
         MaybeRethrow();
+    }
+
+    std::vector<std::vector<float>> Process(const std::vector<float>& input_chunk) {
+        std::vector<std::vector<float>> out_acc;
+        ProcessInto(input_chunk, out_acc);
         return out_acc;
     }
 
-    std::vector<std::vector<float>> Finalize() {
+    void FinalizeInto(std::vector<std::vector<float>>& out_acc) {
         if (!pipelined_) {
-            return serial_->Finalize();
+            out_acc = serial_->Finalize();
+            return;
         }
         if (finalized_) {
             throw std::runtime_error("Error: stream already finalized");
@@ -1831,7 +2345,7 @@ struct Inference::StreamImpl {
 
         MaybeRethrow();
 
-        std::vector<std::vector<float>> out_acc;
+        ResetOut(out_acc);
         DrainDone(out_acc);
 
         oa_->FinalizeInput();
@@ -1846,13 +2360,29 @@ struct Inference::StreamImpl {
             if (!no_more_to_schedule) {
                 while (in_flight_ < pipeline_depth_) {
                     OverlapAddStreamer::ScheduledChunk scheduled;
-                    if (!oa_->TryScheduleNext(scheduled)) {
+                    if (!oa_->TryScheduleNextMeta(scheduled)) {
                         no_more_to_schedule = true;
                         break;
                     }
 
                     Task task;
                     task.scheduled = std::move(scheduled);
+
+                    std::shared_ptr<ChunkState> state;
+                    if (q_free_state_) {
+                        if (!q_free_state_->Pop(state)) {
+                            no_more_to_schedule = true;
+                            break;
+                        }
+                    }
+                    if (!state) {
+                        state = std::make_shared<ChunkState>();
+                    }
+
+                    state->id = task.scheduled.offset;
+                    oa_->MaterializeChunkInput(task.scheduled, state->input_audio);
+                    task.state = std::move(state);
+
                     q_pre_->Push(std::move(task));
                     ++in_flight_;
                 }
@@ -1883,13 +2413,19 @@ struct Inference::StreamImpl {
             }
             --in_flight_;
 
-            auto ready = oa_->ConsumeScheduled(done.scheduled, done.state->final_audio);
-            AppendStems(out_acc, ready);
+            oa_->ConsumeScheduledAppend(done.scheduled, done.state->final_audio, out_acc);
+            MaybeLogMem("final", done);
+            RecycleState(std::move(done.state));
         }
 
         ShutdownAndJoin();
         DrainDone(out_acc);
         MaybeRethrow();
+    }
+
+    std::vector<std::vector<float>> Finalize() {
+        std::vector<std::vector<float>> out_acc;
+        FinalizeInto(out_acc);
         return out_acc;
     }
 
@@ -1898,8 +2434,12 @@ private:
     bool pipelined_ = false;
     size_t pipeline_depth_ = 3;
     int num_stems_ = 0;
+    int chunk_size_ = 0;
+    int num_overlap_ = 0;
+    int step_ = 0;
 
     int timing_level_ = 0;
+    int mem_level_ = 0;
     std::atomic<int64_t> timing_pre_us_{0};
     std::atomic<int64_t> timing_inf_us_{0};
     std::atomic<int64_t> timing_post_us_{0};
@@ -1916,6 +2456,7 @@ private:
     std::unique_ptr<ThreadSafeQueue<Task>> q_inf_;
     std::unique_ptr<ThreadSafeQueue<Task>> q_post_;
     std::unique_ptr<ThreadSafeQueue<Task>> q_done_;
+    std::unique_ptr<ThreadSafeQueue<std::shared_ptr<ChunkState>>> q_free_state_;
 
     std::thread t_pre_;
     std::thread t_inf_;
@@ -1963,6 +2504,7 @@ private:
         if (q_inf_) q_inf_->Shutdown();
         if (q_post_) q_post_->Shutdown();
         if (q_done_) q_done_->Shutdown();
+        if (q_free_state_) q_free_state_->Shutdown();
     }
 
     void MaybeRethrow() {
@@ -1976,12 +2518,86 @@ private:
         }
     }
 
-    static void AppendStems(std::vector<std::vector<float>>& dst, const std::vector<std::vector<float>>& src) {
-        if (src.empty()) return;
-        if (dst.empty()) dst.resize(src.size());
-        for (size_t s = 0; s < src.size(); ++s) {
-            dst[s].insert(dst[s].end(), src[s].begin(), src[s].end());
+    void ResetOut(std::vector<std::vector<float>>& out_acc) {
+        if (num_stems_ <= 0) {
+            out_acc.clear();
+            return;
         }
+
+        if (out_acc.size() != static_cast<size_t>(num_stems_)) {
+            out_acc.resize(static_cast<size_t>(num_stems_));
+        }
+
+        const size_t reserve_frames =
+            (step_ > 0) ? (static_cast<size_t>(step_) * pipeline_depth_) : static_cast<size_t>(std::max(0, chunk_size_));
+        const size_t reserve_floats = reserve_frames * 2;
+
+        for (int s = 0; s < num_stems_; ++s) {
+            auto& v = out_acc[static_cast<size_t>(s)];
+            v.clear();
+            if (reserve_floats > 0 && v.capacity() < reserve_floats) {
+                v.reserve(reserve_floats);
+            }
+        }
+    }
+
+    void MaybeLogMem(const char* tag, const Task& done) {
+        if (mem_level_ <= 0) return;
+
+        const ProcessMemInfo mem = GetProcessMemInfo();
+        const double ws_mb = static_cast<double>(mem.working_set_bytes) / (1024.0 * 1024.0);
+        const double priv_mb = static_cast<double>(mem.private_bytes) / (1024.0 * 1024.0);
+
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(2);
+        oss << "[StreamMem] " << tag
+            << " offset=" << done.scheduled.offset
+            << " part=" << done.scheduled.part_len
+            << " in_flight=" << in_flight_
+            << " ws_mb=" << ws_mb;
+
+        if (mem.private_bytes > 0) {
+            oss << " priv_mb=" << priv_mb;
+        }
+
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+        {
+            ggml_backend_t backend = engine_ && engine_->model_ ? engine_->model_->GetBackend() : nullptr;
+            if (backend && ggml_backend_is_cuda(backend)) {
+                size_t free_bytes = 0;
+                size_t total_bytes = 0;
+                cudaError_t err = cudaMemGetInfo(&free_bytes, &total_bytes);
+                if (err == cudaSuccess && total_bytes > 0) {
+                    const double gpu_free_mb = static_cast<double>(free_bytes) / (1024.0 * 1024.0);
+                    const double gpu_used_mb = static_cast<double>(total_bytes - free_bytes) / (1024.0 * 1024.0);
+                    oss << " gpu_used_mb=" << gpu_used_mb
+                        << " gpu_free_mb=" << gpu_free_mb;
+                } else {
+                    // clear the error
+                    (void) cudaGetLastError();
+                }
+            }
+        }
+#endif
+
+        if (mem_level_ >= 2 && done.state) {
+            const auto& st = *done.state;
+            oss << " n_frames=" << st.n_frames
+                << " in_cap=" << st.input_audio.capacity()
+                << " stft_cap=" << st.stft_flattened.capacity()
+                << " mask_cap=" << st.mask_output.capacity();
+            if (!st.final_audio.empty()) {
+                oss << " out0_cap=" << st.final_audio[0].capacity();
+            }
+        }
+
+        LogStreamTimingLine(oss.str());
+    }
+
+    void RecycleState(std::shared_ptr<ChunkState>&& st) {
+        if (!st) return;
+        if (!q_free_state_) return;
+        q_free_state_->Push(std::move(st));
     }
 
     void DrainDone(std::vector<std::vector<float>>& out_acc) {
@@ -1992,8 +2608,9 @@ private:
             }
             --in_flight_;
 
-            auto ready = oa_->ConsumeScheduled(done.scheduled, done.state->final_audio);
-            AppendStems(out_acc, ready);
+            oa_->ConsumeScheduledAppend(done.scheduled, done.state->final_audio, out_acc);
+            MaybeLogMem("drain", done);
+            RecycleState(std::move(done.state));
         }
     }
 
@@ -2001,10 +2618,26 @@ private:
         if (!oa_) return;
         while (in_flight_ < pipeline_depth_) {
             OverlapAddStreamer::ScheduledChunk scheduled;
-            if (!oa_->TryScheduleNext(scheduled)) break;
+            if (!oa_->TryScheduleNextMeta(scheduled)) break;
 
             Task task;
             task.scheduled = std::move(scheduled);
+
+            // Pre-allocate/reuse ChunkState for this chunk so we can reuse its input_audio buffer (avoids per-chunk heap growth).
+            std::shared_ptr<ChunkState> state;
+            if (q_free_state_) {
+                if (!q_free_state_->Pop(state)) {
+                    break;
+                }
+            }
+            if (!state) {
+                state = std::make_shared<ChunkState>();
+            }
+
+            state->id = task.scheduled.offset;
+            oa_->MaterializeChunkInput(task.scheduled, state->input_audio);
+            task.state = std::move(state);
+
             q_pre_->Push(std::move(task));
             ++in_flight_;
         }
@@ -2018,10 +2651,11 @@ private:
                     using clock = std::chrono::high_resolution_clock;
                     const auto t0 = (timing_level_ > 0) ? clock::now() : clock::time_point{};
 
-                    std::vector<float> audio = std::move(task.scheduled.chunk_in);
-                    task.scheduled.chunk_in.clear();
+                    if (!task.state) {
+                        throw std::runtime_error("Internal error: missing ChunkState in streaming pre stage");
+                    }
 
-                    task.state = engine_->PreProcessChunk(std::move(audio), task.scheduled.offset);
+                    engine_->PreProcessChunkInPlace(*task.state);
 
                     if (timing_level_ > 0) {
                         const auto t1 = clock::now();
@@ -2123,6 +2757,7 @@ private:
         if (q_inf_) q_inf_->Shutdown();
         if (q_post_) q_post_->Shutdown();
         if (q_done_) q_done_->Shutdown();
+        if (q_free_state_) q_free_state_->Shutdown();
 
         if (t_pre_.joinable()) t_pre_.join();
         if (t_inf_.joinable()) t_inf_.join();
@@ -2143,16 +2778,30 @@ std::unique_ptr<Inference::StreamContext> Inference::CreateStream(int chunk_size
 }
 
 std::vector<std::vector<float>> Inference::ProcessStream(StreamContext& ctx, const std::vector<float>& input_chunk) {
+    std::vector<std::vector<float>> out_acc;
+    ProcessStreamInto(ctx, input_chunk, out_acc);
+    return out_acc;
+}
+
+void Inference::ProcessStreamInto(StreamContext& ctx,
+                                  const std::vector<float>& input_chunk,
+                                  std::vector<std::vector<float>>& out_acc) {
     if (ctx.finalized) {
         throw std::runtime_error("Error: stream already finalized");
     }
     if (!ctx.impl) {
         throw std::runtime_error("Error: invalid stream context");
     }
-    return ctx.impl->Process(input_chunk);
+    ctx.impl->ProcessInto(input_chunk, out_acc);
 }
 
 std::vector<std::vector<float>> Inference::FinalizeStream(StreamContext& ctx) {
+    std::vector<std::vector<float>> out_acc;
+    FinalizeStreamInto(ctx, out_acc);
+    return out_acc;
+}
+
+void Inference::FinalizeStreamInto(StreamContext& ctx, std::vector<std::vector<float>>& out_acc) {
     if (ctx.finalized) {
         throw std::runtime_error("Error: stream already finalized");
     }
@@ -2160,5 +2809,5 @@ std::vector<std::vector<float>> Inference::FinalizeStream(StreamContext& ctx) {
         throw std::runtime_error("Error: invalid stream context");
     }
     ctx.finalized = true;
-    return ctx.impl->Finalize();
+    ctx.impl->FinalizeInto(out_acc);
 }

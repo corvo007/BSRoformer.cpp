@@ -72,8 +72,21 @@ public:
         void Feed(const std::vector<float>& input_audio);
         void FinalizeInput();
         bool TryScheduleNext(ScheduledChunk& out);
+
+        // Like TryScheduleNext(), but does NOT allocate/copy chunk_in.
+        // Call MaterializeChunkInput() to fill a reusable buffer when needed.
+        bool TryScheduleNextMeta(ScheduledChunk& out);
+
+        // Materialize scheduled.chunk_in into dst (interleaved stereo, length = chunk_size*2).
+        // This lets pipelined inference reuse buffers (constant-memory, less heap churn).
+        void MaterializeChunkInput(const ScheduledChunk& scheduled, std::vector<float>& dst) const;
         std::vector<std::vector<float>> ConsumeScheduled(const ScheduledChunk& scheduled,
                                                          const std::vector<std::vector<float>>& chunk_out);
+
+        // Like ConsumeScheduled(), but appends any ready output into out_acc (reusing buffers to avoid per-chunk alloc).
+        void ConsumeScheduledAppend(const ScheduledChunk& scheduled,
+                                    const std::vector<std::vector<float>>& chunk_out,
+                                    std::vector<std::vector<float>>& out_acc);
 
         // Feed interleaved stereo samples (size must be even). Returns ready output (may be empty).
         std::vector<std::vector<float>> Push(const std::vector<float>& input_audio);
@@ -143,6 +156,7 @@ public:
         ChunkExtractResult ExtractChunkAtOffset(int64_t abs_offset, int64_t total_length_padded, bool flushing) const;
 
         void AccumulateChunk(const std::vector<std::vector<float>>& chunk_out, int part_len, bool is_first, bool is_last);
+        void AppendReadyOutput(int ready_samples, int64_t remaining_output_limit /*<0 means no limit*/, std::vector<std::vector<float>>& out_acc);
         std::vector<std::vector<float>> EmitReadyOutput(int ready_samples, int64_t remaining_output_limit /*<0 means no limit*/);
         void ShiftWindowByStep();
     };
@@ -165,8 +179,14 @@ public:
     // Feed interleaved stereo samples; returns ready output (may be empty).
     std::vector<std::vector<float>> ProcessStream(StreamContext& ctx, const std::vector<float>& input_chunk);
 
+    // Like ProcessStream(), but writes output into out_acc, reusing its capacity to reduce heap growth.
+    void ProcessStreamInto(StreamContext& ctx, const std::vector<float>& input_chunk, std::vector<std::vector<float>>& out_acc);
+
     // Flush remaining audio; ctx becomes finalized.
     std::vector<std::vector<float>> FinalizeStream(StreamContext& ctx);
+
+    // Like FinalizeStream(), but writes output into out_acc, reusing its capacity to reduce heap growth.
+    void FinalizeStreamInto(StreamContext& ctx, std::vector<std::vector<float>>& out_acc);
 
   private:
     // Pipelined Overlap-Add
@@ -191,6 +211,13 @@ private:
     struct ggml_tensor* pos_freq_ = nullptr;
     struct ggml_tensor* mask_out_tensor_ = nullptr;
 
+    // Optional pinned staging buffers for CUDA H2D/D2H copies.
+    // Keeps memory usage stable when using async copies from pageable memory.
+    void* cuda_pinned_in_ = nullptr;
+    size_t cuda_pinned_in_bytes_ = 0;
+    void* cuda_pinned_out_ = nullptr;
+    size_t cuda_pinned_out_bytes_ = 0;
+
     // Cached Host Data (to avoid reallocation)
     std::vector<int32_t> pos_time_data_;
     std::vector<int32_t> pos_freq_data_;
@@ -212,6 +239,15 @@ private:
         
         std::vector<float> mask_output;       // Output from GPU
         std::vector<std::vector<float>> final_audio;       // Result after ISTFT [stems][samples]
+
+        // Optional CUDA host registration state for large per-chunk I/O buffers.
+        // Implemented in src/inference.cpp (no CUDA headers required here).
+        void* cuda_reg_stft_ptr = nullptr;
+        size_t cuda_reg_stft_bytes = 0;
+        void* cuda_reg_mask_ptr = nullptr;
+        size_t cuda_reg_mask_bytes = 0;
+
+        ~ChunkState();
     };
 
     // Helper to ensure graph is built for specific n_frames
@@ -231,6 +267,8 @@ private:
                              std::vector<std::vector<float>>& output_audio);
 
     // Pipeline Steps
+    void PreProcessChunkInto(ChunkState& state, std::vector<float> chunk_audio, int64_t id);
+    void PreProcessChunkInPlace(ChunkState& state);
     std::shared_ptr<ChunkState> PreProcessChunk(std::vector<float> chunk_audio, int64_t id);
     void RunInference(std::shared_ptr<ChunkState> state);
     void PostProcessChunk(std::shared_ptr<ChunkState> state);

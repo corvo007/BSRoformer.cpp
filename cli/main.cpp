@@ -65,6 +65,7 @@ void print_usage(const char* program_name) {
     std::cerr << "  --chunk-size <N>   Chunk size in samples (default: from model, fallback 352800)" << std::endl;
     std::cerr << "  --overlap <N>      Number of overlaps for crossfade (default: from model, fallback 2)" << std::endl;
     std::cerr << "  --no-stream        Disable streaming I/O (debug only; uses more RAM)" << std::endl;
+    std::cerr << "  --no-io-threads    Streaming I/O without reader/writer threads (debug only)" << std::endl;
     std::cerr << "  --no-pipeline      Disable pipelined streaming inference (debug only)" << std::endl;
     std::cerr << "  --help, -h         Show this help message" << std::endl;
 }
@@ -77,6 +78,7 @@ int main(int argc, char* argv[]) {
     bool num_overlap_set = false;
     bool use_streaming_io = true; // Default: streaming
     bool use_pipelined_stream = true; // Default: pipelined streaming inference
+    bool use_io_threads = true; // Default: threaded reader/writer for streaming I/O
     
     // Check for help flag first
     for (int i = 1; i < argc; ++i) {
@@ -125,6 +127,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--no-stream") {
             use_streaming_io = false;
+        } else if (arg == "--no-io-threads") {
+            use_io_threads = false;
         } else if (arg == "--no-pipeline") {
             use_pipelined_stream = false;
         } else {
@@ -255,83 +259,173 @@ int main(int argc, char* argv[]) {
             auto stream = engine.CreateStream(chunk_size, num_overlap, use_pipelined_stream);
             const drwav_uint64 read_frames = static_cast<drwav_uint64>(chunk_size);
 
-            ThreadSafeQueue<InputChunk> input_queue;
-            ThreadSafeQueue<OutputChunk> output_queue;
-            std::atomic<drwav_uint64> frames_read_total{0};
+            if (use_io_threads) {
+                ThreadSafeQueue<InputChunk> input_queue;
+                ThreadSafeQueue<OutputChunk> output_queue;
+                std::atomic<drwav_uint64> frames_read_total{0};
 
-            // Reader thread
-            std::thread reader([&]() {
+                // Pool large buffers to avoid per-chunk heap growth (Windows heap commit can climb with repeated alloc/free).
+                const size_t io_queue_depth = 8;
+                ThreadSafeQueue<std::vector<float>> input_pool(io_queue_depth);
+                ThreadSafeQueue<std::vector<std::vector<float>>> output_pool(io_queue_depth);
+                for (size_t i = 0; i < io_queue_depth; ++i) {
+                    input_pool.push(std::vector<float>{});
+
+                    std::vector<std::vector<float>> out_buf;
+                    out_buf.resize(static_cast<size_t>(stems));
+                    for (int s = 0; s < stems; ++s) {
+                        out_buf[static_cast<size_t>(s)].reserve(static_cast<size_t>(read_frames) * 2);
+                    }
+                    output_pool.push(std::move(out_buf));
+                }
+
+                // Reader thread
+                std::thread reader([&]() {
+                    std::vector<float> read_buf(static_cast<size_t>(read_frames) * in_ch);
+                    while (true) {
+                        drwav_uint64 got = drwav_read_pcm_frames_f32(&wav, read_frames, read_buf.data());
+                        if (got == 0) break;
+
+                        std::vector<float> chunk_buf;
+                        input_pool.pop(chunk_buf);
+
+                        InputChunk chunk;
+                        if (in_ch == 1) {
+                            chunk_buf.resize(static_cast<size_t>(got) * 2);
+                            for (drwav_uint64 i = 0; i < got; ++i) {
+                                float x = read_buf[static_cast<size_t>(i)];
+                                chunk_buf[static_cast<size_t>(i) * 2 + 0] = x;
+                                chunk_buf[static_cast<size_t>(i) * 2 + 1] = x;
+                            }
+                        } else {
+                            const size_t n_floats = static_cast<size_t>(got) * in_ch;
+                            chunk_buf.resize(n_floats);
+                            std::memcpy(chunk_buf.data(), read_buf.data(), n_floats * sizeof(float));
+                        }
+                        chunk.data = std::move(chunk_buf);
+                        input_queue.push(std::move(chunk));
+                        frames_read_total += got;
+                    }
+                    InputChunk end; end.is_end = true;
+                    input_queue.push(std::move(end));
+                });
+
+                // Writer thread
+                std::thread writer([&]() {
+                    while (true) {
+                        OutputChunk chunk;
+                        output_queue.pop(chunk);
+                        if (chunk.is_end) break;
+
+                        for (int s = 0; s < stems; ++s) {
+                            if (chunk.stems.size() <= static_cast<size_t>(s)) continue;
+                            drwav_write_pcm_frames(&writers[s], chunk.stems[s].size() / 2, chunk.stems[s].data());
+                        }
+
+                        output_pool.push(std::move(chunk.stems));
+                    }
+                });
+
+                // Main processing loop
+                float last_progress = -0.05f;
+                while (true) {
+                    InputChunk chunk;
+                    input_queue.pop(chunk);
+                    if (chunk.is_end) break;
+
+                    std::vector<std::vector<float>> out_buf;
+                    output_pool.pop(out_buf);
+
+                    engine.ProcessStreamInto(*stream, chunk.data, out_buf);
+                    input_pool.push(std::move(chunk.data));
+
+                    OutputChunk out_chunk;
+                    out_chunk.stems = std::move(out_buf);
+                    output_queue.push(std::move(out_chunk));
+
+                    if (total_frames > 0) {
+                        float progress = static_cast<float>(frames_read_total.load()) / static_cast<float>(total_frames);
+                        if (progress - last_progress >= 0.05f) {
+                            progress_callback(progress);
+                            last_progress = progress;
+                        }
+                    }
+                }
+
+                std::vector<std::vector<float>> tail;
+                output_pool.pop(tail);
+                engine.FinalizeStreamInto(*stream, tail);
+
+                bool has_tail = false;
+                for (const auto& s : tail) {
+                    if (!s.empty()) {
+                        has_tail = true;
+                        break;
+                    }
+                }
+
+                if (has_tail) {
+                    OutputChunk tail_chunk;
+                    tail_chunk.stems = std::move(tail);
+                    output_queue.push(std::move(tail_chunk));
+                } else {
+                    output_pool.push(std::move(tail));
+                }
+
+                OutputChunk end; end.is_end = true;
+                output_queue.push(std::move(end));
+
+                reader.join();
+                writer.join();
+            } else {
+                std::cout << "[Info] Streaming I/O without reader/writer threads (--no-io-threads)" << std::endl;
+
                 std::vector<float> read_buf(static_cast<size_t>(read_frames) * in_ch);
+                std::vector<float> chunk_data;
+                std::vector<std::vector<float>> out;
+                drwav_uint64 frames_read_total = 0;
+                float last_progress = -0.05f;
+
                 while (true) {
                     drwav_uint64 got = drwav_read_pcm_frames_f32(&wav, read_frames, read_buf.data());
                     if (got == 0) break;
 
-                    InputChunk chunk;
                     if (in_ch == 1) {
-                        chunk.data.resize(static_cast<size_t>(got) * 2);
+                        chunk_data.resize(static_cast<size_t>(got) * 2);
                         for (drwav_uint64 i = 0; i < got; ++i) {
                             float x = read_buf[static_cast<size_t>(i)];
-                            chunk.data[static_cast<size_t>(i) * 2 + 0] = x;
-                            chunk.data[static_cast<size_t>(i) * 2 + 1] = x;
+                            chunk_data[static_cast<size_t>(i) * 2 + 0] = x;
+                            chunk_data[static_cast<size_t>(i) * 2 + 1] = x;
                         }
                     } else {
-                        chunk.data.assign(read_buf.begin(), read_buf.begin() + static_cast<size_t>(got) * in_ch);
+                        chunk_data.assign(read_buf.begin(), read_buf.begin() + static_cast<size_t>(got) * in_ch);
                     }
-                    input_queue.push(std::move(chunk));
                     frames_read_total += got;
-                }
-                InputChunk end; end.is_end = true;
-                input_queue.push(std::move(end));
-            });
 
-            // Writer thread
-            std::thread writer([&]() {
-                while (true) {
-                    OutputChunk chunk;
-                    output_queue.pop(chunk);
-                    if (chunk.is_end) break;
-
+                    engine.ProcessStreamInto(*stream, chunk_data, out);
                     for (int s = 0; s < stems; ++s) {
-                        if (chunk.stems.size() <= static_cast<size_t>(s)) continue;
-                        drwav_write_pcm_frames(&writers[s], chunk.stems[s].size() / 2, chunk.stems[s].data());
+                        if (out.size() <= static_cast<size_t>(s)) continue;
+                        drwav_write_pcm_frames(&writers[s], out[s].size() / 2, out[s].data());
+                    }
+
+                    if (total_frames > 0) {
+                        float progress = static_cast<float>(frames_read_total) / static_cast<float>(total_frames);
+                        if (progress - last_progress >= 0.05f) {
+                            progress_callback(progress);
+                            last_progress = progress;
+                        }
                     }
                 }
-            });
 
-            // Main processing loop
-            float last_progress = -0.05f;
-            while (true) {
-                InputChunk chunk;
-                input_queue.pop(chunk);
-                if (chunk.is_end) break;
-
-                auto out = engine.ProcessStream(*stream, chunk.data);
-
-                OutputChunk out_chunk;
-                out_chunk.stems = std::move(out);
-                output_queue.push(std::move(out_chunk));
-
-                if (total_frames > 0) {
-                    float progress = static_cast<float>(frames_read_total.load()) / static_cast<float>(total_frames);
-                    if (progress - last_progress >= 0.05f) {
-                        progress_callback(progress);
-                        last_progress = progress;
+                std::vector<std::vector<float>> tail;
+                engine.FinalizeStreamInto(*stream, tail);
+                for (int s = 0; s < stems; ++s) {
+                    if (tail.size() <= static_cast<size_t>(s)) continue;
+                    if (!tail[s].empty()) {
+                        drwav_write_pcm_frames(&writers[s], tail[s].size() / 2, tail[s].data());
                     }
                 }
             }
-
-            auto tail = engine.FinalizeStream(*stream);
-            if (!tail.empty()) {
-                OutputChunk tail_chunk;
-                tail_chunk.stems = std::move(tail);
-                output_queue.push(std::move(tail_chunk));
-            }
-
-            OutputChunk end; end.is_end = true;
-            output_queue.push(std::move(end));
-
-            reader.join();
-            writer.join();
 
             // Clear progress line
             std::cout << std::string(70, ' ') << "\r";
