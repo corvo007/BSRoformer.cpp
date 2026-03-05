@@ -503,9 +503,10 @@ void print_usage(const char* program_name) {
     std::cerr << "  --no-stream        Disable streaming I/O (debug only; uses more RAM)" << std::endl;
     std::cerr << "  --no-io-threads    Streaming I/O without reader/writer threads (debug only)" << std::endl;
     std::cerr << "  --no-pipeline      Disable pipelined streaming inference (debug only)" << std::endl;
-    std::cerr << "  --segment-minutes [N] Enable multiprocess segmentation for long audio (default N=30)" << std::endl;
+    std::cerr << "  --segment-minutes [N] Enable multiprocess segmentation (default N=30; auto-enabled for >30min)" << std::endl;
     std::cerr << "  --segment-overlap-seconds <N> Overlap duration for segment crossfade (default: 10)" << std::endl;
     std::cerr << "  --segment-keep-temp Keep temporary segment outputs (debug only)" << std::endl;
+    std::cerr << "  --no-segment       Disable multiprocess segmentation (debug only)" << std::endl;
     std::cerr << "  --start-frame <N>  (Advanced) Start at PCM frame N (0-based)" << std::endl;
     std::cerr << "  --frames <N>       (Advanced) Process only N PCM frames from start-frame" << std::endl;
     std::cerr << "  --no-progress      Disable progress bar output" << std::endl;
@@ -521,7 +522,9 @@ int main(int argc, char* argv[]) {
     bool use_streaming_io = true; // Default: streaming
     bool use_pipelined_stream = true; // Default: pipelined streaming inference
     bool use_io_threads = true; // Default: threaded reader/writer for streaming I/O
-    int segment_minutes = 0; // 0 disables multiprocess segmentation
+    enum class SegmentMode { Auto, On, Off };
+    SegmentMode segment_mode = SegmentMode::Auto; // Default: auto-enable segmentation for long audio
+    int segment_minutes = 30;
     int segment_overlap_seconds = 10;
     bool segment_keep_temp = false;
     bool no_progress = false;
@@ -582,6 +585,7 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--no-pipeline") {
             use_pipelined_stream = false;
         } else if (arg == "--segment-minutes") {
+            segment_mode = SegmentMode::On;
             segment_minutes = 30;
             if (i + 1 < argc) {
                 std::string next = argv[i + 1];
@@ -594,6 +598,8 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
+        } else if (arg == "--no-segment") {
+            segment_mode = SegmentMode::Off;
         } else if (arg == "--segment-overlap-seconds" && i + 1 < argc) {
             try {
                 segment_overlap_seconds = std::stoi(argv[++i]);
@@ -628,12 +634,50 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        if (segment_minutes > 0) {
-            if (!use_streaming_io) {
+        if (!use_streaming_io) {
+            if (segment_mode == SegmentMode::On) {
                 throw std::runtime_error("Multiprocess segmentation requires streaming I/O (do not use --no-stream)");
             }
-            if (frames_limit_set || start_frame != 0) {
+            // Segmentation requires streaming I/O. Keep behaviour predictable if user requests --no-stream.
+            segment_mode = SegmentMode::Off;
+        }
+        if (frames_limit_set || start_frame != 0) {
+            if (segment_mode == SegmentMode::On) {
                 throw std::runtime_error("Do not combine --segment-minutes with --start-frame/--frames");
+            }
+            // Segmentation doesn't support partial range processing; disable automatically.
+            segment_mode = SegmentMode::Off;
+        }
+
+        bool use_segmentation = false;
+        if (segment_mode != SegmentMode::Off) {
+            if (segment_minutes <= 0) {
+                throw std::runtime_error("segment-minutes must be a positive integer");
+            }
+
+            if (segment_mode == SegmentMode::On) {
+                use_segmentation = true;
+            } else {
+                // Auto: enable only when the input is longer than one segment.
+                drwav in_wav{};
+                if (!drwav_init_file(&in_wav, input_path.c_str(), nullptr)) {
+                    throw std::runtime_error("Failed to open audio file: " + input_path);
+                }
+                const unsigned int in_sr = in_wav.sampleRate;
+                const drwav_uint64 total_frames = in_wav.totalPCMFrameCount;
+                drwav_uninit(&in_wav);
+
+                const drwav_uint64 segment_frames = static_cast<drwav_uint64>(segment_minutes) * 60ull *
+                                                    static_cast<drwav_uint64>(in_sr);
+                if (segment_frames > 0 && total_frames > segment_frames) {
+                    use_segmentation = true;
+                }
+            }
+        }
+
+        if (use_segmentation) {
+            if (!use_streaming_io) {
+                throw std::runtime_error("Multiprocess segmentation requires streaming I/O (do not use --no-stream)");
             }
 
             return RunSegmentedMultiprocess(exe_path,
