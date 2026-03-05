@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(GGML_CUDA "Enable CUDA backend" ON)
 option(BSR_BUILD_TESTS "Build tests" OFF)
 option(BSR_BUILD_CLI "Build CLI application" ON)
+option(BSR_COPY_CUDA_DLLS "Copy CUDA runtime DLLs next to bs_roformer-cli on Windows" ON)
 
 #================================================
 # Dependencies - GGML (Flexible Resolution)
@@ -121,6 +122,50 @@ if(BSR_BUILD_CLI)
     
     if(MSVC)
         target_compile_options(bs_roformer-cli PRIVATE /W3 /utf-8)
+    endif()
+
+    if(UNIX AND NOT APPLE)
+        # Allow colocated deployment on Linux:
+        # - shared libs next to the executable ($ORIGIN)
+        # - shared libs in a sibling lib directory ($ORIGIN/lib)
+        set_target_properties(bs_roformer-cli PROPERTIES
+            BUILD_RPATH "\$ORIGIN;\$ORIGIN/lib"
+            INSTALL_RPATH "\$ORIGIN;\$ORIGIN/lib"
+        )
+    endif()
+
+    if(WIN32 AND GGML_CUDA AND TARGET ggml-cuda AND BSR_COPY_CUDA_DLLS)
+        if(NOT CUDAToolkit_BIN_DIR)
+            find_package(CUDAToolkit REQUIRED)
+        endif()
+
+        if(CUDAToolkit_BIN_DIR)
+            set(BSR_CUDA_RUNTIME_DLLS "")
+            foreach(pattern
+                    cudart64_*.dll
+                    cublas64_*.dll
+                    cublasLt64_*.dll)
+                file(GLOB dlls "${CUDAToolkit_BIN_DIR}/${pattern}")
+                list(APPEND BSR_CUDA_RUNTIME_DLLS ${dlls})
+            endforeach()
+            list(REMOVE_DUPLICATES BSR_CUDA_RUNTIME_DLLS)
+
+            if(BSR_CUDA_RUNTIME_DLLS)
+                foreach(dll ${BSR_CUDA_RUNTIME_DLLS})
+                    add_custom_command(TARGET bs_roformer-cli POST_BUILD
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                                "${dll}"
+                                "$<TARGET_FILE_DIR:bs_roformer-cli>"
+                        VERBATIM
+                    )
+                endforeach()
+                message(STATUS "CUDA runtime DLL copy: ENABLED (${CUDAToolkit_BIN_DIR})")
+            else()
+                message(WARNING "BSR_COPY_CUDA_DLLS=ON but no CUDA runtime DLLs were found in ${CUDAToolkit_BIN_DIR}")
+            endif()
+        else()
+            message(WARNING "BSR_COPY_CUDA_DLLS=ON but CUDAToolkit_BIN_DIR is not available")
+        endif()
     endif()
 endif()
 
