@@ -36,6 +36,7 @@ Options:
   --chunk-size <N>   Chunk size (in samples), defaults to model value
   --overlap <N>      Number of overlaps, defaults to model value
   --no-stream        Disable streaming I/O (debug only; uses more RAM)
+  --no-io-threads    Streaming I/O without reader/writer threads (debug only)
   --no-pipeline      Disable pipelined streaming inference (debug only)
   --help, -h         Show help message
 ```
@@ -68,7 +69,7 @@ Options:
 
 The following environment variables can help with performance/memory tuning:
 
-- `BSR_STREAM_PIPELINE_DEPTH` (default `3`, range `1..8`): number of in-flight chunks in the streaming pipeline. Increasing this can reduce GPU idle time, but increases RAM usage slightly.
+- `BSR_STREAM_PIPELINE_DEPTH` (default `1`, range `1..8`): number of in-flight chunks in the streaming pipeline. Increasing this can reduce GPU idle time, but increases RAM usage.
 - `BSR_GGML_GRAPH_CTX_MB` (default `32`): GGML graph context size in MB. Increase if graph building fails for a specific model/chunk size.
 - `BSR_STREAM_TIMING` (default `0`): set to `1` to print per-chunk timing for `pre/inf/post` stages (useful for GPU bubble analysis).
 
