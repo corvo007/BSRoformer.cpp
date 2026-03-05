@@ -35,6 +35,8 @@
 选项:
   --chunk-size <N>   分块大小（采样点数），默认从模型读取
   --overlap <N>      重叠数量，默认从模型读取
+  --no-stream        禁用流式 I/O（仅用于调试；会占用更多内存）
+  --no-pipeline      禁用流式推理流水线（仅用于调试）
   --help, -h         显示帮助信息
 ```
 
@@ -59,6 +61,16 @@
 ```
 
 > **注意**：输入音频必须为 **44100 Hz**，支持立体声或单声道（自动扩展）。
+>
+> **内存**：CLI 默认启用 **流式 WAV 读写**，避免把整段音频一次性加载到内存。需要回退到旧的“整段加载”路径可使用 `--no-stream`。
+
+### 性能调优（高级）
+
+可通过以下环境变量做性能/内存调优：
+
+- `BSR_STREAM_PIPELINE_DEPTH`（默认 `3`，范围 `1..8`）：流式推理流水线允许的 in-flight chunk 数。适当增大可减少 GPU 空转，但会略微增加 RAM 占用。
+- `BSR_GGML_GRAPH_CTX_MB`（默认 `32`）：GGML 图上下文大小（MB）。当某个模型/分块大小下建图失败时，可尝试增大该值。
+- `BSR_STREAM_TIMING`（默认 `0`）：设为 `1` 会输出每个 chunk 的 `pre/inf/post` 分阶段耗时（用于分析 GPU bubble）。
 
 ---
 
@@ -288,6 +300,8 @@ ctest --test-dir build -C Release
 # 运行特定测试
 ctest --test-dir build -C Release -R test_inference
 ```
+
+> 注意：依赖外部模型文件或 `test_data/` 的测试，在缺少所需文件时会自动 **跳过**。
 
 ### 测试套件
 
