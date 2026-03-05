@@ -56,10 +56,23 @@ int main(int argc, char* argv[]) {
 
     Inference engine(model_path);
 
-    const int chunk_frames = engine.GetDefaultChunkSize();
+    const int default_chunk_frames = engine.GetDefaultChunkSize();
     const int sr = engine.GetSampleRate();
-    TEST_ASSERT(chunk_frames > 0, "Model default chunk size must be positive");
+    TEST_ASSERT(default_chunk_frames > 0, "Model default chunk size must be positive");
     TEST_ASSERT(sr > 0, "Model sample rate must be positive");
+
+    // CI/runtime guard: some models (notably BS Roformer) ship with very large default chunk sizes
+    // (e.g. ~960k frames, ~22s at 44.1kHz). On CPU-only runners this can exceed CTest's per-test
+    // timeout. Repeatability only requires deterministic re-runs on identical input, so we cap the
+    // test input length to keep the test fast across platforms.
+    const int kMaxTestSeconds = 2;
+    const int max_test_frames = sr * kMaxTestSeconds;
+    const int chunk_frames = std::min(default_chunk_frames, max_test_frames);
+    TEST_ASSERT(chunk_frames > 0, "Resolved test chunk size must be positive");
+
+    std::cout << "Using chunk_frames=" << chunk_frames
+              << " (model_default=" << default_chunk_frames
+              << ", sr=" << sr << "Hz)" << std::endl;
 
     auto input = MakeSyntheticVoiceLikeStereo(chunk_frames, sr, /*seed=*/123);
 
@@ -92,4 +105,3 @@ int main(int argc, char* argv[]) {
     LOG_PASS();
     return 0;
 }
-
