@@ -217,6 +217,10 @@ private:
     size_t cuda_pinned_in_bytes_ = 0;
     void* cuda_pinned_out_ = nullptr;
     size_t cuda_pinned_out_bytes_ = 0;
+    void* cuda_pinned_pos_time_ = nullptr;
+    size_t cuda_pinned_pos_time_bytes_ = 0;
+    void* cuda_pinned_pos_freq_ = nullptr;
+    size_t cuda_pinned_pos_freq_bytes_ = 0;
 
     // Cached Host Data (to avoid reallocation)
     std::vector<int32_t> pos_time_data_;

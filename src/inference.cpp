@@ -335,6 +335,16 @@ Inference::~Inference() {
         cuda_pinned_out_ = nullptr;
         cuda_pinned_out_bytes_ = 0;
     }
+    if (cuda_pinned_pos_time_ != nullptr) {
+        TryCudaFreeHost(cuda_pinned_pos_time_);
+        cuda_pinned_pos_time_ = nullptr;
+        cuda_pinned_pos_time_bytes_ = 0;
+    }
+    if (cuda_pinned_pos_freq_ != nullptr) {
+        TryCudaFreeHost(cuda_pinned_pos_freq_);
+        cuda_pinned_pos_freq_ = nullptr;
+        cuda_pinned_pos_freq_bytes_ = 0;
+    }
 
     if (allocr_) ggml_gallocr_free(allocr_);
     if (ctx_) ggml_free(ctx_);
@@ -371,6 +381,16 @@ bool Inference::EnsureGraph(int n_frames) {
             TryCudaFreeHost(cuda_pinned_out_);
             cuda_pinned_out_ = nullptr;
             cuda_pinned_out_bytes_ = 0;
+        }
+        if (cuda_pinned_pos_time_ != nullptr) {
+            TryCudaFreeHost(cuda_pinned_pos_time_);
+            cuda_pinned_pos_time_ = nullptr;
+            cuda_pinned_pos_time_bytes_ = 0;
+        }
+        if (cuda_pinned_pos_freq_ != nullptr) {
+            TryCudaFreeHost(cuda_pinned_pos_freq_);
+            cuda_pinned_pos_freq_ = nullptr;
+            cuda_pinned_pos_freq_bytes_ = 0;
         }
     };
 
@@ -508,6 +528,22 @@ bool Inference::EnsureGraph(int n_frames) {
                     if (cuda_pinned_out_ != nullptr) TryCudaFreeHost(cuda_pinned_out_);
                     cuda_pinned_out_ = TryCudaMallocHost(out_bytes);
                     cuda_pinned_out_bytes_ = (cuda_pinned_out_ != nullptr) ? out_bytes : 0;
+                }
+
+                // Pinned staging for RoPE position tensors. These are small (~hundreds of KB), but if they come
+                // from pageable memory, cudaMemcpyAsync may allocate internal pinned staging buffers that can
+                // appear as gradual host memory growth on some drivers for long runs.
+                const size_t pos_time_bytes = ggml_nbytes(pos_time_);
+                if (cuda_pinned_pos_time_bytes_ != pos_time_bytes) {
+                    if (cuda_pinned_pos_time_ != nullptr) TryCudaFreeHost(cuda_pinned_pos_time_);
+                    cuda_pinned_pos_time_ = TryCudaMallocHost(pos_time_bytes);
+                    cuda_pinned_pos_time_bytes_ = (cuda_pinned_pos_time_ != nullptr) ? pos_time_bytes : 0;
+                }
+                const size_t pos_freq_bytes = ggml_nbytes(pos_freq_);
+                if (cuda_pinned_pos_freq_bytes_ != pos_freq_bytes) {
+                    if (cuda_pinned_pos_freq_ != nullptr) TryCudaFreeHost(cuda_pinned_pos_freq_);
+                    cuda_pinned_pos_freq_ = TryCudaMallocHost(pos_freq_bytes);
+                    cuda_pinned_pos_freq_bytes_ = (cuda_pinned_pos_freq_ != nullptr) ? pos_freq_bytes : 0;
                 }
             }
         }
@@ -879,6 +915,24 @@ void Inference::RunInference(std::shared_ptr<ChunkState> state) {
         for(int i=0; i < required_freq_size; ++i) pos_freq_data_[i] = i % n_bands;
     }
 
+    // If we have pinned staging for position tensors, keep it up-to-date.
+    const void* pos_time_src = pos_time_data_.data();
+    const void* pos_freq_src = pos_freq_data_.data();
+#if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (backend && ggml_backend_is_cuda(backend) && WantCudaPinnedStaging()) {
+        const size_t pos_time_bytes = static_cast<size_t>(pos_time_data_.size()) * sizeof(int32_t);
+        if (cuda_pinned_pos_time_ != nullptr && cuda_pinned_pos_time_bytes_ >= pos_time_bytes) {
+            std::memcpy(cuda_pinned_pos_time_, pos_time_data_.data(), pos_time_bytes);
+            pos_time_src = cuda_pinned_pos_time_;
+        }
+        const size_t pos_freq_bytes = static_cast<size_t>(pos_freq_data_.size()) * sizeof(int32_t);
+        if (cuda_pinned_pos_freq_ != nullptr && cuda_pinned_pos_freq_bytes_ >= pos_freq_bytes) {
+            std::memcpy(cuda_pinned_pos_freq_, pos_freq_data_.data(), pos_freq_bytes);
+            pos_freq_src = cuda_pinned_pos_freq_;
+        }
+    }
+#endif
+
     // 4. Host -> Device
     using clock = std::chrono::high_resolution_clock;
 
@@ -896,8 +950,8 @@ void Inference::RunInference(std::shared_ptr<ChunkState> state) {
         // On some backends (observed on CUDA), these input buffers can become stale/corrupted across successive
         // graph runs if we only upload them once per n_frames. Re-uploading is cheap (~hundreds of KB) and keeps
         // multi-chunk inference stable.
-        ggml_backend_tensor_set_async(backend, pos_time_, pos_time_data_.data(), 0, ggml_nbytes(pos_time_));
-        ggml_backend_tensor_set_async(backend, pos_freq_, pos_freq_data_.data(), 0, ggml_nbytes(pos_freq_));
+        ggml_backend_tensor_set_async(backend, pos_time_, pos_time_src, 0, ggml_nbytes(pos_time_));
+        ggml_backend_tensor_set_async(backend, pos_freq_, pos_freq_src, 0, ggml_nbytes(pos_freq_));
         uploaded_pos_n_frames_ = n_frames;
     };
 
@@ -2223,11 +2277,13 @@ std::vector<std::vector<float>> Inference::OverlapAddStreamer::Finalize() {
 
 static size_t GetStreamPipelineDepth() {
     const char* env = std::getenv("BSR_STREAM_PIPELINE_DEPTH");
-    if (!env || !*env) return 3;
+    // Default to depth=1 to keep host-side in-flight buffers minimal for very long audio.
+    // Users can raise this to 2-8 to overlap pre/inf/post stages for higher throughput.
+    if (!env || !*env) return 1;
 
     char* end = nullptr;
     long v = std::strtol(env, &end, 10);
-    if (end == env) return 3;
+    if (end == env) return 1;
 
     if (v < 1) v = 1;
     if (v > 8) v = 8;

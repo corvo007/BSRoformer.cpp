@@ -260,12 +260,15 @@ int main(int argc, char* argv[]) {
             const drwav_uint64 read_frames = static_cast<drwav_uint64>(chunk_size);
 
             if (use_io_threads) {
-                ThreadSafeQueue<InputChunk> input_queue;
-                ThreadSafeQueue<OutputChunk> output_queue;
+                // Keep I/O queues/pools small to reduce peak RSS on long runs.
+                // (Reader/writer threads are fast; deep buffering is usually unnecessary.)
+                const size_t io_queue_depth = 2;
+
+                ThreadSafeQueue<InputChunk> input_queue(io_queue_depth);
+                ThreadSafeQueue<OutputChunk> output_queue(io_queue_depth);
                 std::atomic<drwav_uint64> frames_read_total{0};
 
                 // Pool large buffers to avoid per-chunk heap growth (Windows heap commit can climb with repeated alloc/free).
-                const size_t io_queue_depth = 8;
                 ThreadSafeQueue<std::vector<float>> input_pool(io_queue_depth);
                 ThreadSafeQueue<std::vector<std::vector<float>>> output_pool(io_queue_depth);
                 for (size_t i = 0; i < io_queue_depth; ++i) {
