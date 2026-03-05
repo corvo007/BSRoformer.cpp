@@ -63,12 +63,14 @@
 > **注意**：输入音频必须为 **44100 Hz**，支持立体声或单声道（自动扩展）。
 >
 > **内存**：CLI 默认启用 **流式 WAV 读写**，避免把整段音频一次性加载到内存。需要回退到旧的“整段加载”路径可使用 `--no-stream`。
+>
+> **超长音频**：如果你发现（例如 CUDA 后端）处理多小时音频时 host 内存会随时间增长，可使用 `--segment-minutes 30` 以多进程分段处理并通过 overlap crossfade 拼接输出。
 
 ### 性能调优（高级）
 
 可通过以下环境变量做性能/内存调优：
 
-- `BSR_STREAM_PIPELINE_DEPTH`（默认 `3`，范围 `1..8`）：流式推理流水线允许的 in-flight chunk 数。适当增大可减少 GPU 空转，但会略微增加 RAM 占用。
+- `BSR_STREAM_PIPELINE_DEPTH`（默认 `2`，范围 `1..8`）：流式推理流水线允许的 in-flight chunk 数。适当增大可减少 GPU 空转，但会略微增加 RAM 占用。
 - `BSR_GGML_GRAPH_CTX_MB`（默认 `32`）：GGML 图上下文大小（MB）。当某个模型/分块大小下建图失败时，可尝试增大该值。
 - `BSR_STREAM_TIMING`（默认 `0`）：设为 `1` 会输出每个 chunk 的 `pre/inf/post` 分阶段耗时（用于分析 GPU bubble）。
 

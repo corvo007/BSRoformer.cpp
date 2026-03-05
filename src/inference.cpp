@@ -2277,13 +2277,13 @@ std::vector<std::vector<float>> Inference::OverlapAddStreamer::Finalize() {
 
 static size_t GetStreamPipelineDepth() {
     const char* env = std::getenv("BSR_STREAM_PIPELINE_DEPTH");
-    // Default to depth=1 to keep host-side in-flight buffers minimal for very long audio.
-    // Users can raise this to 2-8 to overlap pre/inf/post stages for higher throughput.
-    if (!env || !*env) return 1;
+    // Default to depth=2 to overlap pre/inf/post while keeping in-flight buffers reasonably bounded.
+    // For very long audio on RAM-constrained machines, set this to 1 to minimize host-side buffering.
+    if (!env || !*env) return 2;
 
     char* end = nullptr;
     long v = std::strtol(env, &end, 10);
-    if (end == env) return 1;
+    if (end == env) return 2;
 
     if (v < 1) v = 1;
     if (v > 8) v = 8;

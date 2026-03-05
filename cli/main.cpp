@@ -12,6 +12,17 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <filesystem>
+#include <sstream>
+#include <iomanip>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <process.h>
+#endif
 
 template<typename T>
 class ThreadSafeQueue {
@@ -58,6 +69,431 @@ static std::string MakeStemOutputPath(const std::string& output_path, int stem_i
     return output_path + "_stem_" + std::to_string(stem_idx);
 }
 
+static std::filesystem::path GetSelfExecutablePath(const char* argv0) {
+#ifdef _WIN32
+    std::wstring buf;
+    buf.resize(32768);
+    DWORD len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+    if (len > 0 && len < buf.size()) {
+        buf.resize(len);
+        return std::filesystem::path(buf);
+    }
+#endif
+    return std::filesystem::path(argv0 ? argv0 : "");
+}
+
+#ifdef _WIN32
+static std::wstring Utf8ToWide(const std::string& s) {
+    if (s.empty()) return {};
+
+    int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (needed <= 0) {
+        needed = MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, nullptr, 0);
+        if (needed <= 0) return {};
+
+        std::wstring out(static_cast<size_t>(needed) - 1, L'\0');
+        MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, out.data(), needed);
+        return out;
+    }
+
+    std::wstring out(static_cast<size_t>(needed) - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), needed);
+    return out;
+}
+
+static int SpawnChildAndWait(const std::filesystem::path& exe_path, const std::vector<std::string>& args) {
+    std::vector<std::wstring> wargs;
+    wargs.reserve(args.size() + 2);
+    wargs.push_back(exe_path.wstring());
+    for (const auto& a : args) {
+        wargs.push_back(Utf8ToWide(a));
+    }
+
+    std::vector<const wchar_t*> argvw;
+    argvw.reserve(wargs.size() + 1);
+    for (const auto& w : wargs) {
+        argvw.push_back(w.c_str());
+    }
+    argvw.push_back(nullptr);
+
+    int rc = _wspawnv(_P_WAIT, wargs[0].c_str(), argvw.data());
+    if (rc == -1) {
+        throw std::runtime_error("Failed to spawn child process");
+    }
+    return rc;
+}
+#else
+static int SpawnChildAndWait(const std::filesystem::path& exe_path, const std::vector<std::string>& args) {
+    (void)exe_path;
+    (void)args;
+    throw std::runtime_error("Multiprocess segmentation is only supported on Windows in this build");
+}
+#endif
+
+static std::filesystem::path CreateTempDir() {
+    const auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+    std::ostringstream name;
+    name << "bs_roformer_segments_" << stamp;
+
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / name.str();
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+static bool FileExists(const std::filesystem::path& p) {
+    std::error_code ec;
+    return std::filesystem::exists(p, ec);
+}
+
+static void StreamCopyAll(drwav& reader, drwav& writer) {
+    constexpr drwav_uint64 kBlockFrames = 1u << 16;
+    std::vector<float> buf(static_cast<size_t>(kBlockFrames) * 2);
+    while (true) {
+        drwav_uint64 got = drwav_read_pcm_frames_f32(&reader, kBlockFrames, buf.data());
+        if (got == 0) break;
+        drwav_write_pcm_frames(&writer, got, buf.data());
+    }
+}
+
+static void StreamCopyAllButKeepTail(drwav& reader,
+                                    drwav& writer,
+                                    drwav_uint64 keep_tail_frames,
+                                    std::vector<float>& out_tail /*stereo interleaved*/) {
+    constexpr drwav_uint64 kBlockFrames = 1u << 16;
+    if (keep_tail_frames == 0) {
+        StreamCopyAll(reader, writer);
+        out_tail.clear();
+        return;
+    }
+
+    std::vector<float> buf(static_cast<size_t>(kBlockFrames) * 2);
+    std::vector<float> pending;
+    pending.reserve(static_cast<size_t>(keep_tail_frames + kBlockFrames) * 2);
+    size_t pending_start = 0;
+
+    auto pending_frames = [&]() -> drwav_uint64 {
+        return static_cast<drwav_uint64>((pending.size() - pending_start) / 2);
+    };
+
+    while (true) {
+        drwav_uint64 got = drwav_read_pcm_frames_f32(&reader, kBlockFrames, buf.data());
+        if (got == 0) break;
+
+        pending.insert(pending.end(), buf.begin(), buf.begin() + static_cast<size_t>(got) * 2);
+
+        const drwav_uint64 have_frames = pending_frames();
+        if (have_frames > keep_tail_frames) {
+            const drwav_uint64 write_frames = have_frames - keep_tail_frames;
+            drwav_write_pcm_frames(&writer, write_frames, pending.data() + pending_start);
+            pending_start += static_cast<size_t>(write_frames) * 2;
+
+            if (pending_start > static_cast<size_t>(kBlockFrames) * 8) {
+                pending.erase(pending.begin(), pending.begin() + static_cast<std::vector<float>::difference_type>(pending_start));
+                pending_start = 0;
+            }
+        }
+    }
+
+    out_tail.assign(pending.begin() + static_cast<std::vector<float>::difference_type>(pending_start), pending.end());
+}
+
+static void CrossfadeAndWrite(drwav& writer,
+                             const std::vector<float>& a /*stereo interleaved*/,
+                             const std::vector<float>& b /*stereo interleaved*/,
+                             drwav_uint64 frames) {
+    if (frames == 0) return;
+    if (a.size() < static_cast<size_t>(frames) * 2 || b.size() < static_cast<size_t>(frames) * 2) {
+        throw std::runtime_error("Crossfade buffers are smaller than requested frames");
+    }
+
+    std::vector<float> out(static_cast<size_t>(frames) * 2);
+    const float denom = (frames > 1) ? static_cast<float>(frames - 1) : 1.0f;
+    for (drwav_uint64 f = 0; f < frames; ++f) {
+        const float alpha = (frames > 1) ? (static_cast<float>(f) / denom) : 1.0f;
+        const float wa = 1.0f - alpha;
+        const float wb = alpha;
+
+        const size_t idx = static_cast<size_t>(f) * 2;
+        out[idx + 0] = a[idx + 0] * wa + b[idx + 0] * wb;
+        out[idx + 1] = a[idx + 1] * wa + b[idx + 1] * wb;
+    }
+
+    drwav_write_pcm_frames(&writer, frames, out.data());
+}
+
+static int DetectNumStemsFromSegmentOutputs(const std::filesystem::path& segment_output_base) {
+    if (FileExists(segment_output_base)) return 1;
+
+    for (int s = 1; s <= 16; ++s) {
+        const auto stem0 = std::filesystem::path(MakeStemOutputPath(segment_output_base.string(), 0, s));
+        const auto stemLast = std::filesystem::path(MakeStemOutputPath(segment_output_base.string(), s - 1, s));
+        if (FileExists(stem0) && FileExists(stemLast)) {
+            return s;
+        }
+    }
+
+    throw std::runtime_error("Failed to detect stem output files from first segment");
+}
+
+static void MergeOneSegmentStem(const std::filesystem::path& seg_stem_path,
+                               drwav& writer,
+                               size_t seg_idx,
+                               size_t seg_count,
+                               drwav_uint64 overlap_frames,
+                               std::vector<float>& prev_tail /*in/out*/) {
+    drwav reader{};
+    if (!drwav_init_file(&reader, seg_stem_path.string().c_str(), nullptr)) {
+        throw std::runtime_error("Failed to open segment stem for reading: " + seg_stem_path.string());
+    }
+
+    const unsigned int ch = reader.channels;
+    if (ch != 2) {
+        drwav_uninit(&reader);
+        throw std::runtime_error("Segment stem must be stereo (2 channels): " + seg_stem_path.string());
+    }
+
+    if (writer.sampleRate != 0 && reader.sampleRate != writer.sampleRate) {
+        drwav_uninit(&reader);
+        throw std::runtime_error("Sample rate mismatch while merging segment stems");
+    }
+
+    const bool is_first = (seg_idx == 0);
+    const bool is_last = (seg_idx + 1 >= seg_count);
+
+    if (overlap_frames == 0 || seg_count <= 1) {
+        StreamCopyAll(reader, writer);
+        drwav_uninit(&reader);
+        prev_tail.clear();
+        return;
+    }
+
+    if (is_first) {
+        StreamCopyAllButKeepTail(reader, writer, overlap_frames, prev_tail);
+        drwav_uninit(&reader);
+        if (prev_tail.size() != static_cast<size_t>(overlap_frames) * 2) {
+            throw std::runtime_error("First segment is shorter than segment overlap; reduce overlap or segment length");
+        }
+        return;
+    }
+
+    if (prev_tail.size() != static_cast<size_t>(overlap_frames) * 2) {
+        drwav_uninit(&reader);
+        throw std::runtime_error("Previous tail size mismatch during segment merge");
+    }
+
+    std::vector<float> head(static_cast<size_t>(overlap_frames) * 2);
+    drwav_uint64 got_head = drwav_read_pcm_frames_f32(&reader, overlap_frames, head.data());
+    if (got_head != overlap_frames) {
+        drwav_uninit(&reader);
+        throw std::runtime_error("Segment is shorter than segment overlap; reduce overlap or segment length");
+    }
+
+    CrossfadeAndWrite(writer, prev_tail, head, overlap_frames);
+
+    if (is_last) {
+        StreamCopyAll(reader, writer);
+        drwav_uninit(&reader);
+        prev_tail.clear();
+        return;
+    }
+
+    StreamCopyAllButKeepTail(reader, writer, overlap_frames, prev_tail);
+    drwav_uninit(&reader);
+    if (prev_tail.size() != static_cast<size_t>(overlap_frames) * 2) {
+        throw std::runtime_error("Segment tail is shorter than segment overlap; reduce overlap or segment length");
+    }
+}
+
+static int RunSegmentedMultiprocess(const std::filesystem::path& exe_path,
+                                   const std::string& model_path,
+                                   const std::string& input_path,
+                                   const std::string& output_path,
+                                   bool chunk_size_set,
+                                   int chunk_size,
+                                   bool num_overlap_set,
+                                   int num_overlap,
+                                   bool use_pipelined_stream,
+                                   bool use_io_threads,
+                                   int segment_minutes,
+                                   int segment_overlap_seconds,
+                                   bool keep_temps) {
+    drwav in_wav{};
+    if (!drwav_init_file(&in_wav, input_path.c_str(), nullptr)) {
+        throw std::runtime_error("Failed to open audio file: " + input_path);
+    }
+
+    const unsigned int in_sr = in_wav.sampleRate;
+    const drwav_uint64 total_frames = in_wav.totalPCMFrameCount;
+    drwav_uninit(&in_wav);
+
+    if (segment_minutes <= 0) {
+        throw std::runtime_error("segment-minutes must be a positive integer");
+    }
+    if (segment_overlap_seconds < 0) {
+        throw std::runtime_error("segment-overlap-seconds must be >= 0");
+    }
+
+    const drwav_uint64 segment_frames = static_cast<drwav_uint64>(segment_minutes) * 60ull * static_cast<drwav_uint64>(in_sr);
+    const drwav_uint64 overlap_frames = static_cast<drwav_uint64>(segment_overlap_seconds) * static_cast<drwav_uint64>(in_sr);
+
+    if (segment_frames == 0) {
+        throw std::runtime_error("Invalid segment length (0 frames)");
+    }
+    if (overlap_frames >= segment_frames && segment_overlap_seconds > 0) {
+        throw std::runtime_error("segment overlap must be shorter than segment length");
+    }
+
+    const size_t seg_count = static_cast<size_t>((total_frames + segment_frames - 1) / segment_frames);
+    if (seg_count <= 1) {
+        std::cout << "[Info] Input shorter than one segment; running single-process inference in a child process." << std::endl;
+        std::vector<std::string> child_args;
+        child_args.reserve(16);
+        child_args.push_back(model_path);
+        child_args.push_back(input_path);
+        child_args.push_back(output_path);
+        if (chunk_size_set) {
+            child_args.push_back("--chunk-size");
+            child_args.push_back(std::to_string(chunk_size));
+        }
+        if (num_overlap_set) {
+            child_args.push_back("--overlap");
+            child_args.push_back(std::to_string(num_overlap));
+        }
+        if (!use_io_threads) {
+            child_args.push_back("--no-io-threads");
+        }
+        if (!use_pipelined_stream) {
+            child_args.push_back("--no-pipeline");
+        }
+
+        return SpawnChildAndWait(exe_path, child_args);
+    }
+
+    std::cout << "[Info] Multiprocess segmentation enabled: " << seg_count << " segments of "
+              << segment_minutes << " minutes (overlap " << segment_overlap_seconds << "s)" << std::endl;
+
+    const auto tmp_dir = CreateTempDir();
+    std::cout << "[Info] Temp dir: " << tmp_dir.string() << std::endl;
+
+    int stems = -1;
+    std::vector<drwav> writers;
+    std::vector<std::string> stem_paths;
+    std::vector<std::vector<float>> prev_tails;
+
+    drwav_data_format format{};
+    format.container = drwav_container_riff;
+    format.format = DR_WAVE_FORMAT_IEEE_FLOAT;
+    format.channels = 2;
+    format.sampleRate = in_sr;
+    format.bitsPerSample = 32;
+
+    auto cleanup_tmp = [&]() {
+        if (keep_temps) return;
+        std::error_code ec;
+        std::filesystem::remove_all(tmp_dir, ec);
+    };
+
+    try {
+        for (size_t i = 0; i < seg_count; ++i) {
+            const drwav_uint64 nominal_start = static_cast<drwav_uint64>(i) * segment_frames;
+            const drwav_uint64 nominal_end = std::min(total_frames, nominal_start + segment_frames);
+            const drwav_uint64 seg_start = (i == 0 || overlap_frames == 0) ? nominal_start
+                                                                           : (nominal_start > overlap_frames ? (nominal_start - overlap_frames) : 0);
+            const drwav_uint64 seg_frames = (nominal_end > seg_start) ? (nominal_end - seg_start) : 0;
+
+            std::ostringstream seg_name;
+            seg_name << "segment_" << std::setw(6) << std::setfill('0') << i << ".wav";
+            const std::filesystem::path seg_out_base = tmp_dir / seg_name.str();
+
+            std::vector<std::string> child_args;
+            child_args.reserve(32);
+            child_args.push_back(model_path);
+            child_args.push_back(input_path);
+            child_args.push_back(seg_out_base.string());
+
+            if (chunk_size_set) {
+                child_args.push_back("--chunk-size");
+                child_args.push_back(std::to_string(chunk_size));
+            }
+            if (num_overlap_set) {
+                child_args.push_back("--overlap");
+                child_args.push_back(std::to_string(num_overlap));
+            }
+            if (!use_io_threads) {
+                child_args.push_back("--no-io-threads");
+            }
+            if (!use_pipelined_stream) {
+                child_args.push_back("--no-pipeline");
+            }
+
+            child_args.push_back("--start-frame");
+            child_args.push_back(std::to_string(seg_start));
+            child_args.push_back("--frames");
+            child_args.push_back(std::to_string(seg_frames));
+            child_args.push_back("--no-progress");
+
+            std::cout << "[Info] Running segment " << (i + 1) << "/" << seg_count
+                      << " (frames " << seg_start << " .. " << nominal_end
+                      << ", len=" << seg_frames << ")" << std::endl;
+
+            int rc = SpawnChildAndWait(exe_path, child_args);
+            if (rc != 0) {
+                throw std::runtime_error("Child process failed for segment " + std::to_string(i) +
+                                         " (exit code " + std::to_string(rc) + ")");
+            }
+
+            if (i == 0) {
+                stems = DetectNumStemsFromSegmentOutputs(seg_out_base);
+                std::cout << "[Info] Detected " << stems << " stems from model output." << std::endl;
+
+                writers.resize(static_cast<size_t>(stems));
+                stem_paths.resize(static_cast<size_t>(stems));
+                prev_tails.resize(static_cast<size_t>(stems));
+
+                for (int s = 0; s < stems; ++s) {
+                    stem_paths[static_cast<size_t>(s)] = MakeStemOutputPath(output_path, s, stems);
+                    if (!drwav_init_file_write(&writers[static_cast<size_t>(s)], stem_paths[static_cast<size_t>(s)].c_str(), &format, nullptr)) {
+                        for (int j = 0; j < s; ++j) drwav_uninit(&writers[static_cast<size_t>(j)]);
+                        throw std::runtime_error("Failed to open file for writing: " + stem_paths[static_cast<size_t>(s)]);
+                    }
+                }
+            }
+
+            for (int s = 0; s < stems; ++s) {
+                const std::filesystem::path seg_stem = MakeStemOutputPath(seg_out_base.string(), s, stems);
+                MergeOneSegmentStem(seg_stem, writers[static_cast<size_t>(s)], i, seg_count, overlap_frames, prev_tails[static_cast<size_t>(s)]);
+            }
+
+            if (!keep_temps) {
+                std::error_code ec;
+                if (stems <= 1) {
+                    std::filesystem::remove(seg_out_base, ec);
+                } else {
+                    for (int s = 0; s < stems; ++s) {
+                        const std::filesystem::path seg_stem = MakeStemOutputPath(seg_out_base.string(), s, stems);
+                        std::filesystem::remove(seg_stem, ec);
+                    }
+                }
+            }
+        }
+
+        for (int s = 0; s < stems; ++s) {
+            drwav_uninit(&writers[static_cast<size_t>(s)]);
+            std::cout << "Saved output stem " << s << ": " << stem_paths[static_cast<size_t>(s)] << std::endl;
+        }
+
+        cleanup_tmp();
+        return 0;
+    } catch (...) {
+        for (auto& w : writers) {
+            drwav_uninit(&w);
+        }
+        cleanup_tmp();
+        throw;
+    }
+}
+
 void print_usage(const char* program_name) {
     std::cerr << "Usage: " << program_name << " <model.gguf> <input.wav> <output.wav> [options]" << std::endl;
     std::cerr << std::endl;
@@ -67,6 +503,12 @@ void print_usage(const char* program_name) {
     std::cerr << "  --no-stream        Disable streaming I/O (debug only; uses more RAM)" << std::endl;
     std::cerr << "  --no-io-threads    Streaming I/O without reader/writer threads (debug only)" << std::endl;
     std::cerr << "  --no-pipeline      Disable pipelined streaming inference (debug only)" << std::endl;
+    std::cerr << "  --segment-minutes [N] Enable multiprocess segmentation for long audio (default N=30)" << std::endl;
+    std::cerr << "  --segment-overlap-seconds <N> Overlap duration for segment crossfade (default: 10)" << std::endl;
+    std::cerr << "  --segment-keep-temp Keep temporary segment outputs (debug only)" << std::endl;
+    std::cerr << "  --start-frame <N>  (Advanced) Start at PCM frame N (0-based)" << std::endl;
+    std::cerr << "  --frames <N>       (Advanced) Process only N PCM frames from start-frame" << std::endl;
+    std::cerr << "  --no-progress      Disable progress bar output" << std::endl;
     std::cerr << "  --help, -h         Show this help message" << std::endl;
 }
 
@@ -79,6 +521,13 @@ int main(int argc, char* argv[]) {
     bool use_streaming_io = true; // Default: streaming
     bool use_pipelined_stream = true; // Default: pipelined streaming inference
     bool use_io_threads = true; // Default: threaded reader/writer for streaming I/O
+    int segment_minutes = 0; // 0 disables multiprocess segmentation
+    int segment_overlap_seconds = 10;
+    bool segment_keep_temp = false;
+    bool no_progress = false;
+    drwav_uint64 start_frame = 0;
+    drwav_uint64 frames_limit = 0;
+    bool frames_limit_set = false;
     
     // Check for help flag first
     for (int i = 1; i < argc; ++i) {
@@ -93,10 +542,11 @@ int main(int argc, char* argv[]) {
         print_usage(argv[0]);
         return 1;
     }
-
+    
     std::string model_path = argv[1];
     std::string input_path = argv[2];
     std::string output_path = argv[3];
+    const auto exe_path = GetSelfExecutablePath(argv[0]);
     
     // Parse optional arguments
     for (int i = 4; i < argc; ++i) {
@@ -131,6 +581,45 @@ int main(int argc, char* argv[]) {
             use_io_threads = false;
         } else if (arg == "--no-pipeline") {
             use_pipelined_stream = false;
+        } else if (arg == "--segment-minutes") {
+            segment_minutes = 30;
+            if (i + 1 < argc) {
+                std::string next = argv[i + 1];
+                if (!next.empty() && next[0] != '-') {
+                    try {
+                        segment_minutes = std::stoi(argv[++i]);
+                    } catch (...) {
+                        std::cerr << "Error: invalid segment-minutes" << std::endl;
+                        return 1;
+                    }
+                }
+            }
+        } else if (arg == "--segment-overlap-seconds" && i + 1 < argc) {
+            try {
+                segment_overlap_seconds = std::stoi(argv[++i]);
+            } catch (...) {
+                std::cerr << "Error: invalid segment-overlap-seconds" << std::endl;
+                return 1;
+            }
+        } else if (arg == "--segment-keep-temp") {
+            segment_keep_temp = true;
+        } else if (arg == "--start-frame" && i + 1 < argc) {
+            try {
+                start_frame = static_cast<drwav_uint64>(std::stoull(argv[++i]));
+            } catch (...) {
+                std::cerr << "Error: invalid start-frame" << std::endl;
+                return 1;
+            }
+        } else if (arg == "--frames" && i + 1 < argc) {
+            try {
+                frames_limit = static_cast<drwav_uint64>(std::stoull(argv[++i]));
+                frames_limit_set = true;
+            } catch (...) {
+                std::cerr << "Error: invalid frames" << std::endl;
+                return 1;
+            }
+        } else if (arg == "--no-progress") {
+            no_progress = true;
         } else {
             std::cerr << "Unknown option: " << arg << std::endl;
             print_usage(argv[0]);
@@ -139,6 +628,29 @@ int main(int argc, char* argv[]) {
     }
 
     try {
+        if (segment_minutes > 0) {
+            if (!use_streaming_io) {
+                throw std::runtime_error("Multiprocess segmentation requires streaming I/O (do not use --no-stream)");
+            }
+            if (frames_limit_set || start_frame != 0) {
+                throw std::runtime_error("Do not combine --segment-minutes with --start-frame/--frames");
+            }
+
+            return RunSegmentedMultiprocess(exe_path,
+                                           model_path,
+                                           input_path,
+                                           output_path,
+                                           chunk_size_set,
+                                           chunk_size,
+                                           num_overlap_set,
+                                           num_overlap,
+                                           use_pipelined_stream,
+                                           use_io_threads,
+                                           segment_minutes,
+                                           segment_overlap_seconds,
+                                           segment_keep_temp);
+        }
+
         std::cout << "Initializing BSRoformer..." << std::endl;
         auto start_time = std::chrono::high_resolution_clock::now();
         
@@ -160,7 +672,8 @@ int main(int argc, char* argv[]) {
         auto process_start = std::chrono::high_resolution_clock::now();
         
         // Progress Bar Callback
-        auto progress_callback = [](float progress) {
+        auto progress_callback = [&](float progress) {
+            if (no_progress) return;
             int barWidth = 50;
             std::cout << "[";
             int pos = barWidth * progress;
@@ -176,6 +689,9 @@ int main(int argc, char* argv[]) {
         std::vector<std::vector<float>> output_stems;
         if (!use_streaming_io) {
             std::cout << "[Info] Streaming disabled: loading full WAV into memory..." << std::endl;
+            if (frames_limit_set || start_frame != 0) {
+                throw std::runtime_error("--start-frame/--frames requires streaming mode (do not use --no-stream)");
+            }
             AudioBuffer input_audio = AudioFile::Load(input_path);
 
             std::cout << "Audio loaded: " << input_audio.samples << " samples, "
@@ -218,6 +734,19 @@ int main(int argc, char* argv[]) {
             const unsigned int in_sr = wav.sampleRate;
             const drwav_uint64 total_frames = wav.totalPCMFrameCount;
 
+            if (start_frame > total_frames) {
+                drwav_uninit(&wav);
+                throw std::runtime_error("start-frame is beyond end of file");
+            }
+            if (start_frame > 0) {
+                if (!drwav_seek_to_pcm_frame(&wav, start_frame)) {
+                    drwav_uninit(&wav);
+                    throw std::runtime_error("Failed to seek to start-frame");
+                }
+            }
+            const drwav_uint64 available_frames = total_frames - start_frame;
+            const drwav_uint64 total_frames_to_process = frames_limit_set ? std::min(frames_limit, available_frames) : available_frames;
+
             std::cout << "Audio opened: " << (total_frames * in_ch) << " samples, "
                       << in_ch << " channels, "
                       << in_sr << " Hz" << std::endl;
@@ -258,7 +787,7 @@ int main(int argc, char* argv[]) {
 
             auto stream = engine.CreateStream(chunk_size, num_overlap, use_pipelined_stream);
             const drwav_uint64 read_frames = static_cast<drwav_uint64>(chunk_size);
-
+            
             if (use_io_threads) {
                 // Keep I/O queues/pools small to reduce peak RSS on long runs.
                 // (Reader/writer threads are fast; deep buffering is usually unnecessary.)
@@ -285,9 +814,13 @@ int main(int argc, char* argv[]) {
                 // Reader thread
                 std::thread reader([&]() {
                     std::vector<float> read_buf(static_cast<size_t>(read_frames) * in_ch);
+                    drwav_uint64 frames_left = total_frames_to_process;
                     while (true) {
-                        drwav_uint64 got = drwav_read_pcm_frames_f32(&wav, read_frames, read_buf.data());
+                        if (frames_left == 0) break;
+                        const drwav_uint64 want = std::min(read_frames, frames_left);
+                        drwav_uint64 got = drwav_read_pcm_frames_f32(&wav, want, read_buf.data());
                         if (got == 0) break;
+                        frames_left -= got;
 
                         std::vector<float> chunk_buf;
                         input_pool.pop(chunk_buf);
@@ -346,8 +879,8 @@ int main(int argc, char* argv[]) {
                     out_chunk.stems = std::move(out_buf);
                     output_queue.push(std::move(out_chunk));
 
-                    if (total_frames > 0) {
-                        float progress = static_cast<float>(frames_read_total.load()) / static_cast<float>(total_frames);
+                    if (total_frames_to_process > 0) {
+                        float progress = static_cast<float>(frames_read_total.load()) / static_cast<float>(total_frames_to_process);
                         if (progress - last_progress >= 0.05f) {
                             progress_callback(progress);
                             last_progress = progress;
@@ -387,11 +920,15 @@ int main(int argc, char* argv[]) {
                 std::vector<float> chunk_data;
                 std::vector<std::vector<float>> out;
                 drwav_uint64 frames_read_total = 0;
+                drwav_uint64 frames_left = total_frames_to_process;
                 float last_progress = -0.05f;
 
                 while (true) {
-                    drwav_uint64 got = drwav_read_pcm_frames_f32(&wav, read_frames, read_buf.data());
+                    if (frames_left == 0) break;
+                    const drwav_uint64 want = std::min(read_frames, frames_left);
+                    drwav_uint64 got = drwav_read_pcm_frames_f32(&wav, want, read_buf.data());
                     if (got == 0) break;
+                    frames_left -= got;
 
                     if (in_ch == 1) {
                         chunk_data.resize(static_cast<size_t>(got) * 2);
@@ -411,8 +948,8 @@ int main(int argc, char* argv[]) {
                         drwav_write_pcm_frames(&writers[s], out[s].size() / 2, out[s].data());
                     }
 
-                    if (total_frames > 0) {
-                        float progress = static_cast<float>(frames_read_total) / static_cast<float>(total_frames);
+                    if (total_frames_to_process > 0) {
+                        float progress = static_cast<float>(frames_read_total) / static_cast<float>(total_frames_to_process);
                         if (progress - last_progress >= 0.05f) {
                             progress_callback(progress);
                             last_progress = progress;

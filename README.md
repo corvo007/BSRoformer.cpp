@@ -38,6 +38,10 @@ Options:
   --no-stream        Disable streaming I/O (debug only; uses more RAM)
   --no-io-threads    Streaming I/O without reader/writer threads (debug only)
   --no-pipeline      Disable pipelined streaming inference (debug only)
+  --segment-minutes [N] Enable multiprocess segmentation for long audio (default N=30)
+  --segment-overlap-seconds <N> Overlap duration for segment crossfade (default: 10)
+  --segment-keep-temp Keep temporary segment outputs (debug only)
+  --no-progress      Disable progress bar output
   --help, -h         Show help message
 ```
 
@@ -64,12 +68,14 @@ Options:
 > **Note**: Input audio must be **44100 Hz**. Stereo or mono is supported (auto-expanded).
 >
 > **Memory**: The CLI uses **streaming WAV read/write by default** to avoid loading the full track into RAM. Use `--no-stream` to fall back to the legacy full-load path.
+>
+> **Very long audio**: If you observe host RAM usage increasing over time (e.g. multi-hour videos on CUDA), use `--segment-minutes 30` to process the file in multiple child processes and merge results with a crossfade overlap.
 
 ### Performance Tuning (Advanced)
 
 The following environment variables can help with performance/memory tuning:
 
-- `BSR_STREAM_PIPELINE_DEPTH` (default `1`, range `1..8`): number of in-flight chunks in the streaming pipeline. Increasing this can reduce GPU idle time, but increases RAM usage.
+- `BSR_STREAM_PIPELINE_DEPTH` (default `2`, range `1..8`): number of in-flight chunks in the streaming pipeline. Increasing this can reduce GPU idle time, but increases RAM usage.
 - `BSR_GGML_GRAPH_CTX_MB` (default `32`): GGML graph context size in MB. Increase if graph building fails for a specific model/chunk size.
 - `BSR_STREAM_TIMING` (default `0`): set to `1` to print per-chunk timing for `pre/inf/post` stages (useful for GPU bubble analysis).
 
