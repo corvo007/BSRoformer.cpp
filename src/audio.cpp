@@ -6,26 +6,29 @@
 AudioBuffer AudioFile::Load(const std::string& path) {
     AudioBuffer buffer;
     drwav_uint64 totalPCMFrames;
-    
-    float* pData = drwav_open_file_and_read_pcm_frames_f32(
-        path.c_str(), &buffer.channels, &buffer.sampleRate, &totalPCMFrames, NULL);
-        
-    if (!pData) {
+
+    // Get file info first
+    drwav wav;
+    if (!drwav_init_file(&wav, path.c_str(), NULL)) {
         throw std::runtime_error("Failed to open audio file: " + path);
     }
-    
+
+    buffer.channels = wav.channels;
+    buffer.sampleRate = wav.sampleRate;
+    totalPCMFrames = wav.totalPCMFrameCount;
     buffer.samples = totalPCMFrames * buffer.channels;
-    buffer.data.assign(pData, pData + buffer.samples);
-    drwav_free(pData, NULL);
-    
+
+    // Allocate directly in vector (avoid temporary buffer)
+    buffer.data.resize(buffer.samples);
+    drwav_read_pcm_frames_f32(&wav, totalPCMFrames, buffer.data.data());
+    drwav_uninit(&wav);
+
     // Validation
     if (buffer.sampleRate != 44100) {
-        std::cerr << "Warning: Input sample rate is " << buffer.sampleRate 
+        std::cerr << "Warning: Input sample rate is " << buffer.sampleRate
                   << " Hz. Model expects 44100 Hz." << std::endl;
-        // In a full implementation, we would resample here.
-        // For now, we warn.
     }
-    
+
     return buffer;
 }
 

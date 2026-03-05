@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 
 BSRoformer::BSRoformer() {
 }
@@ -86,6 +87,12 @@ void BSRoformer::LoadWeights(const std::string& path) {
     kv_idx = gguf_find_key(ctx_gguf, (kp + "dim").c_str());
     if (kv_idx >= 0) dim_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
 
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "heads").c_str());
+    if (kv_idx >= 0) heads_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
+
+    kv_idx = gguf_find_key(ctx_gguf, (kp + "dim_head").c_str());
+    if (kv_idx >= 0) dim_head_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
+
     kv_idx = gguf_find_key(ctx_gguf, (kp + "num_bands").c_str());
     if (kv_idx >= 0) num_bands_ = (int)gguf_get_val_u32(ctx_gguf, kv_idx);
     
@@ -130,8 +137,12 @@ void BSRoformer::LoadWeights(const std::string& path) {
         }
     }
 
+    std::cout << "STFT Flags: stft_normalized=" << (stft_normalized_ ? "true" : "false")
+              << ", zero_dc=" << (zero_dc_ ? "true" : "false") << std::endl;
+
     std::cout << "Model Config: n_fft=" << n_fft_ << ", hop_length=" << hop_length_ 
-              << ", num_bands=" << num_bands_ << ", dim=" << dim_ << ", depth=" << depth_ 
+              << ", num_bands=" << num_bands_ << ", dim=" << dim_ << ", depth=" << depth_
+              << ", heads=" << heads_ << ", dim_head=" << dim_head_
               << ", num_stems=" << num_stems_ << ", skip_conn=" << skip_connection_ << std::endl;
     std::cout << "Inference Defaults: chunk_size=" << default_chunk_size_ 
               << ", num_overlap=" << default_num_overlap_ << std::endl;
@@ -173,6 +184,9 @@ void BSRoformer::LoadWeights(const std::string& path) {
                 freq_indices_.resize(ggml_nelements(t));
                 if (t->type == GGML_TYPE_I32) {
                     memcpy(freq_indices_.data(), read_buf.data(), size);
+                } else {
+                    std::cerr << "[Warning] buffer_freq_indices has unexpected type=" << ggml_type_name(t->type)
+                              << " (expected i32). Values may be invalid." << std::endl;
                 }
                 std::cout << "  Loaded freq_indices: " << freq_indices_.size() << " indices" << std::endl;
             }
@@ -180,12 +194,18 @@ void BSRoformer::LoadWeights(const std::string& path) {
                 num_bands_per_freq_.resize(ggml_nelements(t));
                 if (t->type == GGML_TYPE_I32) {
                     memcpy(num_bands_per_freq_.data(), read_buf.data(), size);
+                } else {
+                    std::cerr << "[Warning] buffer_num_bands_per_freq has unexpected type=" << ggml_type_name(t->type)
+                              << " (expected i32). Values may be invalid." << std::endl;
                 }
             }
             if (std::string(t->name) == "buffer_num_freqs_per_band") {
                 num_freqs_per_band_.resize(ggml_nelements(t));
                 if (t->type == GGML_TYPE_I32) {
                     memcpy(num_freqs_per_band_.data(), read_buf.data(), size);
+                } else {
+                    std::cerr << "[Warning] buffer_num_freqs_per_band has unexpected type=" << ggml_type_name(t->type)
+                              << " (expected i32). Values may be invalid." << std::endl;
                 }
             }
         }
@@ -197,6 +217,37 @@ void BSRoformer::LoadWeights(const std::string& path) {
     
     int n_tensors = gguf_get_n_tensors(ctx_gguf);
     std::cout << "Loaded " << n_tensors << " tensors" << std::endl;
+
+    auto print_int_stats = [&](const char* name, const std::vector<int>& v, int expect_max = -1) {
+        if (v.empty()) {
+            std::cout << "  " << name << ": (empty)" << std::endl;
+            return;
+        }
+
+        int min_v = v[0];
+        int max_v = v[0];
+        int nonzero = 0;
+        for (int x : v) {
+            min_v = std::min(min_v, x);
+            max_v = std::max(max_v, x);
+            if (x != 0) ++nonzero;
+        }
+
+        std::cout << "  " << name << ": n=" << v.size()
+                  << " min=" << min_v
+                  << " max=" << max_v
+                  << " nonzero=" << nonzero;
+        if (expect_max > 0 && max_v > expect_max) {
+            std::cout << " [unexpected_max>" << expect_max << "]";
+        }
+        std::cout << std::endl;
+    };
+
+    const int expected_freqs = n_fft_ / 2 + 1;
+    const int expected_stereo_index_max = expected_freqs * 2 - 1;
+    print_int_stats("freq_indices", freq_indices_, expected_stereo_index_max);
+    print_int_stats("num_bands_per_freq", num_bands_per_freq_, 4);
+    print_int_stats("num_freqs_per_band", num_freqs_per_band_, expected_freqs);
     
     // Dynamic MLP detection
     // Try to find mask_est.0.freq.0.mlp.{N}.weight

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 
 #ifdef USE_OPENMP
 #include <omp.h>
@@ -81,13 +82,12 @@ class TableFFT {
 public:
     static TableFFT& GetInstance(int n_fft) {
         static std::mutex mtx;
-        static std::unique_ptr<TableFFT> instance;
-        static int current_n_fft = -1;
+        static std::unordered_map<int, std::unique_ptr<TableFFT>> instances;
 
         std::lock_guard<std::mutex> lock(mtx);
-        if (!instance || current_n_fft != n_fft) {
+        auto& instance = instances[n_fft];
+        if (!instance) {
             instance = std::make_unique<TableFFT>(n_fft);
-            current_n_fft = n_fft;
         }
         return *instance;
     }
@@ -183,14 +183,14 @@ private:
 // STFT Wrapper (Optimized)
 //=============================================================================
 
-inline void rfft(const float* input, Complex* output, int n, STFTBuffer& buffer) {
+inline void rfft(const float* input, Complex* output, int n, STFTBuffer& buffer, const TableFFT& fft) {
     // 1. Copy to complex buffer
     for (int i = 0; i < n; ++i) {
         buffer.fft_scratch[i] = Complex(input[i], 0.0f);
     }
     
     // 2. FFT
-    TableFFT::GetInstance(n).Forward(buffer.fft_scratch.data());
+    fft.Forward(buffer.fft_scratch.data());
     
     // 3. Copy first N/2 + 1
     int n_out = n / 2 + 1;
@@ -199,7 +199,7 @@ inline void rfft(const float* input, Complex* output, int n, STFTBuffer& buffer)
     }
 }
 
-inline void irfft(const Complex* input, float* output, int n_out, STFTBuffer& buffer) {
+inline void irfft(const Complex* input, float* output, int n_out, STFTBuffer& buffer, const TableFFT& fft) {
     int n_freq = n_out / 2 + 1;
     
     // 1. Reconstruct full spectrum
@@ -211,7 +211,7 @@ inline void irfft(const Complex* input, float* output, int n_out, STFTBuffer& bu
     }
     
     // 2. IFFT
-    TableFFT::GetInstance(n_out).Inverse(buffer.fft_scratch.data());
+    fft.Inverse(buffer.fft_scratch.data());
     
     // 3. Real part
     for (int i = 0; i < n_out; ++i) {
@@ -230,6 +230,11 @@ inline void compute_stft(
     float* output,
     int* n_frames_out
 ) {
+    if (n_samples <= 0) {
+        *n_frames_out = 0;
+        return;
+    }
+
     // Center padding
     int pad_amount = center ? n_fft / 2 : 0;
     int padded_len = n_samples + 2 * pad_amount;
@@ -239,6 +244,8 @@ inline void compute_stft(
     int n_frames = 1 + (padded_len - n_fft) / hop_length;
     if (n_frames < 0) n_frames = 0;
     *n_frames_out = n_frames;
+
+    const TableFFT& fft = TableFFT::GetInstance(n_fft);
     
     // Prepare padding buffer (thread-local or single allocation if not parallel? 
     // Padding + Windowing is usually fast, but padding needs full copy.)
@@ -250,7 +257,8 @@ inline void compute_stft(
     // That's wasteful.
     // Better: Allocate 'padded' once on heap.
     
-    std::vector<float> padded(padded_len);
+    static thread_local std::vector<float> padded;
+    padded.resize(padded_len);
     if (center) {
         // Reflect padding
         for (int i = 0; i < pad_amount; ++i) {
@@ -273,45 +281,42 @@ inline void compute_stft(
     int n_freq = n_fft / 2 + 1;
     
     // Prepare window (Single copy)
-    std::vector<float> window_padded(n_fft, 0.0f);
+    static thread_local std::vector<float> window_padded;
+    window_padded.assign(n_fft, 0.0f);
     if (win_length < n_fft) {
         int left = (n_fft - win_length) / 2;
         std::memcpy(window_padded.data() + left, window, win_length * sizeof(float));
     } else {
         std::memcpy(window_padded.data(), window, n_fft * sizeof(float));
     }
-    
-    // Prepare thread buffers
-    int max_threads = 1;
-    #ifdef USE_OPENMP
-    max_threads = omp_get_max_threads();
-    #endif
-    std::vector<STFTBuffer> thread_buffers(max_threads);
-    for(auto& buf : thread_buffers) buf.Resize(n_fft);
+
+    // NOTE: padded/window_padded are stored in thread-local vectors for reuse across calls, but this
+    // function uses OpenMP for frame parallelism. We must not reference thread_local variables by
+    // name inside the parallel region (each OpenMP worker has its own thread_local instance).
+    // Instead, capture raw pointers to the calling thread's buffers and use those in the loop.
+    const float* padded_ptr = padded.data();
+    const float* window_ptr = window_padded.data();
 
     // Process each frame
     #ifdef USE_OPENMP
     #pragma omp parallel for
     #endif
     for (int f = 0; f < n_frames; ++f) {
-        int tid = 0;
-        #ifdef USE_OPENMP
-        tid = omp_get_thread_num();
-        #endif
-        STFTBuffer& buffer = thread_buffers[tid];
+        static thread_local STFTBuffer buffer;
+        buffer.Resize(n_fft);
 
         std::vector<float>& frame = buffer.frame_in;
         int start = f * hop_length;
         
         for (int i = 0; i < n_fft; ++i) {
-            frame[i] = padded[start + i] * window_padded[i];
+            frame[i] = padded_ptr[start + i] * window_ptr[i];
         }
         
         // Compute FFT
         // Output pointer directly to destination
         // We need a place to store complex output before writing to planar output
         
-        rfft(frame.data(), buffer.fft_out.data(), n_fft, buffer);
+        rfft(frame.data(), buffer.fft_out.data(), n_fft, buffer, fft);
         
         // Write to output
         for (int k = 0; k < n_freq; ++k) {
@@ -337,36 +342,76 @@ inline void compute_istft(
     int expected_len = n_fft + hop_length * (n_frames - 1);
     int pad_amount = center ? n_fft / 2 : 0;
     int output_len = (length > 0) ? length : (expected_len - 2 * pad_amount);
+
+    if (n_frames <= 0 || expected_len <= 0 || output_len <= 0) {
+        return;
+    }
+
+    const TableFFT& fft = TableFFT::GetInstance(n_fft);
     
-    // Prepare padded window
-    std::vector<float> window_padded(n_fft, 0.0f);
+    struct ISTFTCache {
+        int n_fft = -1;
+        int hop_length = -1;
+        int win_length = -1;
+        bool center = false;
+        int n_frames = -1;
+        int expected_len = -1;
+
+        std::vector<float> window_padded;
+        std::vector<float> inv_window_sum;
+    };
+
+    struct ISTFTScratch {
+        ISTFTCache cache;
+        std::vector<float> frames_time_domain;
+        std::vector<float> y;
+    };
+
+    static thread_local ISTFTScratch tls;
+
+    // Prepare padded window (reused buffer; window values are expected to be stable for given win_length)
+    tls.cache.window_padded.assign(n_fft, 0.0f);
     if (win_length < n_fft) {
         int left = (n_fft - win_length) / 2;
-        std::memcpy(window_padded.data() + left, window, win_length * sizeof(float));
+        std::memcpy(tls.cache.window_padded.data() + left, window, win_length * sizeof(float));
     } else {
-        std::memcpy(window_padded.data(), window, n_fft * sizeof(float));
+        std::memcpy(tls.cache.window_padded.data(), window, n_fft * sizeof(float));
+    }
+
+    // Precompute inverse window sum only when shape changes (saves work across stems/channels)
+    if (tls.cache.n_fft != n_fft || tls.cache.hop_length != hop_length || tls.cache.win_length != win_length ||
+        tls.cache.center != center || tls.cache.n_frames != n_frames || tls.cache.expected_len != expected_len) {
+        tls.cache.inv_window_sum.assign(expected_len, 0.0f);
+        for (int f = 0; f < n_frames; ++f) {
+            int start = f * hop_length;
+            for (int i = 0; i < n_fft; ++i) {
+                float w = tls.cache.window_padded[i];
+                tls.cache.inv_window_sum[start + i] += w * w;
+            }
+        }
+        for (int i = 0; i < expected_len; ++i) {
+            float s = tls.cache.inv_window_sum[i];
+            tls.cache.inv_window_sum[i] = (s > 1e-8f) ? (1.0f / s) : 1.0f;
+        }
+
+        tls.cache.n_fft = n_fft;
+        tls.cache.hop_length = hop_length;
+        tls.cache.win_length = win_length;
+        tls.cache.center = center;
+        tls.cache.n_frames = n_frames;
+        tls.cache.expected_len = expected_len;
     }
     
-    // Prepare thread buffers
-    int max_threads = 1;
-    #ifdef USE_OPENMP
-    max_threads = omp_get_max_threads();
-    #endif
-    std::vector<STFTBuffer> thread_buffers(max_threads);
-    for(auto& buf : thread_buffers) buf.Resize(n_fft);
-
     // Step 1: Compute all IFFTs in parallel
-    std::vector<float> frames_time_domain(n_frames * n_fft);
+    tls.frames_time_domain.resize(static_cast<size_t>(n_frames) * static_cast<size_t>(n_fft));
+    float* frames_time_domain = tls.frames_time_domain.data();
     
     #ifdef USE_OPENMP
     #pragma omp parallel for
     #endif
     for (int f = 0; f < n_frames; ++f) {
-        int tid = 0;
-        #ifdef USE_OPENMP
-        tid = omp_get_thread_num();
-        #endif
-        STFTBuffer& buffer = thread_buffers[tid];
+        static thread_local STFTBuffer buffer;
+        buffer.Resize(n_fft);
         
         std::vector<Complex>& fft_in = buffer.fft_in;
         std::vector<float>& frame_out = buffer.frame_out;
@@ -379,37 +424,33 @@ inline void compute_istft(
         }
         
         // IFFT
-        irfft(fft_in.data(), frame_out.data(), n_fft, buffer);
+        irfft(fft_in.data(), frame_out.data(), n_fft, buffer, fft);
         
         // Store
-        std::memcpy(&frames_time_domain[f * n_fft], frame_out.data(), n_fft * sizeof(float));
+        std::memcpy(frames_time_domain + static_cast<size_t>(f) * static_cast<size_t>(n_fft), frame_out.data(), n_fft * sizeof(float));
     }
     
     // Step 2: Overlap Add (Serial)
-    std::vector<float> y(expected_len, 0.0f);
-    std::vector<float> window_sum(expected_len, 0.0f);
+    tls.y.assign(expected_len, 0.0f);
     
     for (int f = 0; f < n_frames; ++f) {
         int start = f * hop_length;
-        const float* frame_ptr = &frames_time_domain[f * n_fft];
+        const float* frame_ptr = frames_time_domain + static_cast<size_t>(f) * static_cast<size_t>(n_fft);
         
         for (int i = 0; i < n_fft; ++i) {
-            y[start + i] += frame_ptr[i] * window_padded[i];
-            window_sum[start + i] += window_padded[i] * window_padded[i];
+            tls.y[start + i] += frame_ptr[i] * tls.cache.window_padded[i];
         }
     }
     
     // Normalize by window sum (avoid division by zero)
     for (int i = 0; i < expected_len; ++i) {
-        if (window_sum[i] > 1e-8f) {
-            y[i] /= window_sum[i];
-        }
+        tls.y[i] *= tls.cache.inv_window_sum[i];
     }
     
     // Remove center padding and copy to output
     for (int i = 0; i < output_len; ++i) {
         if (pad_amount + i < expected_len) {
-             output[i] = y[pad_amount + i];
+             output[i] = tls.y[pad_amount + i];
         } else {
              output[i] = 0.0f;
         }
