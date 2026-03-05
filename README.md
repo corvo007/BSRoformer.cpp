@@ -41,6 +41,7 @@ Options:
   --segment-minutes [N] Enable multiprocess segmentation for long audio (default N=30)
   --segment-overlap-seconds <N> Overlap duration for segment crossfade (default: 10)
   --segment-keep-temp Keep temporary segment outputs (debug only)
+  --no-segment       Disable multiprocess segmentation (debug only)
   --no-progress      Disable progress bar output
   --help, -h         Show help message
 ```
@@ -69,17 +70,38 @@ Options:
 >
 > **Memory**: The CLI uses **streaming WAV read/write by default** to avoid loading the full track into RAM. Use `--no-stream` to fall back to the legacy full-load path.
 >
-> **Very long audio**: If you observe host RAM usage increasing over time (e.g. multi-hour videos on CUDA), use `--segment-minutes 30` to process the file in multiple child processes and merge results with a crossfade overlap.
+> **Very long audio**: By default, inputs longer than 30 minutes are processed via **multiprocess segmentation** (30-minute segments, with a crossfade overlap) to cap CUDA host RAM growth over time. Use `--no-segment` to force single-process, or tune with `--segment-minutes N`.
 
 ### Performance Tuning (Advanced)
 
 The following environment variables can help with performance/memory tuning:
 
 - `BSR_STREAM_PIPELINE_DEPTH` (default `2`, range `1..8`): number of in-flight chunks in the streaming pipeline. Increasing this can reduce GPU idle time, but increases RAM usage.
+- `BSR_CUDA_PINNED_STAGING` (default `0`): set to `1` to use pinned host staging buffers for CUDA H2D/D2H copies. This can improve throughput, but increases host RAM usage (locked/pinned memory).
 - `BSR_GGML_GRAPH_CTX_MB` (default `32`): GGML graph context size in MB. Increase if graph building fails for a specific model/chunk size.
 - `BSR_STREAM_TIMING` (default `0`): set to `1` to print per-chunk timing for `pre/inf/post` stages (useful for GPU bubble analysis).
 
 ---
+
+#### Recommended Settings (CUDA)
+
+Based on internal benchmarks on Windows 11 + RTX 4070 SUPER (`becruily_deux-Q8_0.gguf`):
+
+- **Best balance**: keep defaults (`BSR_STREAM_PIPELINE_DEPTH=2`).
+- **Lower peak RAM**: set `BSR_STREAM_PIPELINE_DEPTH=1` (slower, but noticeably less host memory).
+- **Depth > 2**: typically yields very small speed gains, but increases host RAM (each extra in-flight chunk is large).
+- **Pinned staging**: default is off (`BSR_CUDA_PINNED_STAGING=0`). If you prioritize throughput and have spare RAM, set `BSR_CUDA_PINNED_STAGING=1`.
+
+Measured impact of `BSR_STREAM_PIPELINE_DEPTH` on CUDA (Optimized) + `becruily_deux`:
+
+| Depth | 5min time (s) | 5min peak WS (MB) | 24min time (s) | 24min peak WS (MB) |
+|------:|--------------:|------------------:|---------------:|-------------------:|
+| 1 | 36.61 | 960.8  | 162.75 | 1526.9 |
+| 2 | 31.91 | 1112.4 | 140.71 | 1678.6 |
+| 3 | 31.89 | 1263.8 | 139.90 | 1828.5 |
+| 4 | 31.89 | 1410.7 | 139.98 | 1976.0 |
+
+For more details, see `docs/benchmark_report.md`.
 
 ## 🔧 Building from Source
 

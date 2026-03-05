@@ -36,7 +36,13 @@
   --chunk-size <N>   分块大小（采样点数），默认从模型读取
   --overlap <N>      重叠数量，默认从模型读取
   --no-stream        禁用流式 I/O（仅用于调试；会占用更多内存）
+  --no-io-threads    流式 I/O 不使用读写线程（仅用于调试）
   --no-pipeline      禁用流式推理流水线（仅用于调试）
+  --segment-minutes [N] 启用多进程分段处理长音频（默认 N=30）
+  --segment-overlap-seconds <N> 分段拼接 crossfade 的 overlap 秒数（默认：10）
+  --segment-keep-temp 保留临时分段输出文件（仅用于调试）
+  --no-segment       禁用多进程分段（仅用于调试）
+  --no-progress      禁用进度条输出
   --help, -h         显示帮助信息
 ```
 
@@ -64,17 +70,38 @@
 >
 > **内存**：CLI 默认启用 **流式 WAV 读写**，避免把整段音频一次性加载到内存。需要回退到旧的“整段加载”路径可使用 `--no-stream`。
 >
-> **超长音频**：如果你发现（例如 CUDA 后端）处理多小时音频时 host 内存会随时间增长，可使用 `--segment-minutes 30` 以多进程分段处理并通过 overlap crossfade 拼接输出。
+> **超长音频**：默认情况下，输入长度超过 30 分钟会自动启用 **多进程分段**（30 分钟一段，并通过 crossfade overlap 拼接）来限制 CUDA 下 host 内存随时间增长。你也可以用 `--no-segment` 强制单进程，或用 `--segment-minutes N` 自定义段长。
 
 ### 性能调优（高级）
 
 可通过以下环境变量做性能/内存调优：
 
 - `BSR_STREAM_PIPELINE_DEPTH`（默认 `2`，范围 `1..8`）：流式推理流水线允许的 in-flight chunk 数。适当增大可减少 GPU 空转，但会略微增加 RAM 占用。
+- `BSR_CUDA_PINNED_STAGING`（默认 `0`）：设为 `1` 使用 CUDA H2D/D2H 的 pinned host staging（可能提升吞吐，但会增加锁页内存占用）。
 - `BSR_GGML_GRAPH_CTX_MB`（默认 `32`）：GGML 图上下文大小（MB）。当某个模型/分块大小下建图失败时，可尝试增大该值。
 - `BSR_STREAM_TIMING`（默认 `0`）：设为 `1` 会输出每个 chunk 的 `pre/inf/post` 分阶段耗时（用于分析 GPU bubble）。
 
 ---
+
+#### 推荐设置（CUDA）
+
+基于 Windows 11 + RTX 4070 SUPER 的内部基准（`becruily_deux-Q8_0.gguf`）：
+
+- **最佳平衡**：保持默认（`BSR_STREAM_PIPELINE_DEPTH=2`）。
+- **更低峰值 RAM**：设置 `BSR_STREAM_PIPELINE_DEPTH=1`（更慢，但 host 内存明显更低）。
+- **Depth > 2**：通常速度收益很小，但 RAM 增长明显（每增加 1 个 in-flight chunk 都很“重”）。
+- **Pinned staging**：默认关闭（`BSR_CUDA_PINNED_STAGING=0`）。如果你更看重吞吐且有充足内存，可设为 `1`。
+
+`BSR_STREAM_PIPELINE_DEPTH` 对 CUDA（优化版）+ `becruily_deux` 的影响：
+
+| Depth | 5min 耗时 (s) | 5min 峰值 WS (MB) | 24min 耗时 (s) | 24min 峰值 WS (MB) |
+|------:|--------------:|------------------:|---------------:|-------------------:|
+| 1 | 36.61 | 960.8  | 162.75 | 1526.9 |
+| 2 | 31.91 | 1112.4 | 140.71 | 1678.6 |
+| 3 | 31.89 | 1263.8 | 139.90 | 1828.5 |
+| 4 | 31.89 | 1410.7 | 139.98 | 1976.0 |
+
+更多细节请见 `docs/benchmark_report.md`。
 
 ## 🔧 从源码构建
 
