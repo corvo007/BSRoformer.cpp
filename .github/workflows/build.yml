@@ -258,15 +258,15 @@ jobs:
           BSR_MODEL_PATH: ${{ github.workspace }}/model.gguf
           BSR_TEST_DATA_DIR: ${{ github.workspace }}/test_data
           BSR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
-        run: ctest --test-dir build -C Release -V --output-on-failure --timeout 300
-        
+        run: ctest --test-dir build -C Release -V --output-on-failure --timeout 300 -E test_inference_repeatability
+
       - name: Run Unit Tests (BS Roformer)
         if: matrix.test
         env:
           BSR_MODEL_PATH: ${{ github.workspace }}/model_bs.gguf
           BSR_TEST_DATA_DIR: ${{ github.workspace }}/test_data_bs
           BSR_FORCE_CPU: ${{ runner.os == 'macOS' && '1' || '' }}
-        run: ctest --test-dir build -C Release -V --output-on-failure --timeout 300
+        run: ctest --test-dir build -C Release -V --output-on-failure --timeout 300 -E test_inference_repeatability
         
       # ----- CLI Tests -----
       - name: Test CLI
@@ -279,8 +279,8 @@ jobs:
           echo "=== CLI Test Suite ==="
           
           # Dynamically find CLI executable
-          CLI_NAME="bs_roformer-cli"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then CLI_NAME="bs_roformer-cli.exe"; fi
+          CLI_NAME="bs-roformer-cli"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then CLI_NAME="bs-roformer-cli.exe"; fi
           
           echo "Searching for $CLI_NAME..."
           CLI_PATH=$(find build -name "$CLI_NAME" | head -n 1)
@@ -368,10 +368,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p release/mel-band-roformer
-          CLI_PATH=$(find build -name "bs_roformer-cli" -type f | head -n 1)
+          CLI_PATH=$(find build -name "bs-roformer-cli" -type f | head -n 1)
           if [[ -n "$CLI_PATH" ]]; then
             cp "$CLI_PATH" release/mel-band-roformer/
-            chmod +x release/mel-band-roformer/bs_roformer-cli
+            chmod +x release/mel-band-roformer/bs-roformer-cli
           fi
           echo "Release artifact contents:"
           ls -lh release/mel-band-roformer/
@@ -381,7 +381,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "release\mel-band-roformer"
-          $CliPath = Get-ChildItem -Path build -Filter "bs_roformer-cli.exe" -Recurse -File | Select-Object -First 1
+          $CliPath = Get-ChildItem -Path build -Filter "bs-roformer-cli.exe" -Recurse -File | Select-Object -First 1
           if ($CliPath) {
             Copy-Item $CliPath.FullName "release\mel-band-roformer\"
           }

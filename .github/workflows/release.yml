@@ -1,0 +1,179 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  build-release:
+    name: release-${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64-cpu,    os: ubuntu-22.04,     backend: cpu }
+          - { name: linux-arm64-cpu,  os: ubuntu-22.04-arm, backend: cpu }
+          - { name: macos-arm64,      os: macos-latest,     backend: metal }
+          - { name: macos-x64,        os: macos-15-intel,   backend: metal }
+          - { name: windows-x64-msvc, os: windows-2025,     backend: cpu }
+          - { name: linux-x64-cuda,   os: ubuntu-22.04,     backend: cuda }
+          - { name: windows-x64-cuda, os: windows-2025,     backend: cuda }
+          - { name: linux-vulkan,     os: ubuntu-24.04,     backend: vulkan }
+          - { name: windows-vulkan,   os: windows-2025,     backend: vulkan }
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone GGML
+        run: git clone --depth 1 https://github.com/ggerganov/ggml.git ggml
+
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: "v0.12.0"
+
+      - name: Install Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake
+
+      - name: Install Vulkan SDK (Linux)
+        if: matrix.backend == 'vulkan' && runner.os == 'Linux'
+        run: sudo apt-get install -y libvulkan-dev glslc mesa-vulkan-drivers
+
+      - name: Install Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      - name: Install Dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja -y
+
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
+        run: |
+          $VK_VERSION = "1.4.313.2"
+          curl.exe -o VulkanSDK.exe -L "https://sdk.lunarg.com/sdk/download/${VK_VERSION}/windows/vulkansdk-windows-X64-${VK_VERSION}.exe"
+          Start-Process -FilePath .\VulkanSDK.exe -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${VK_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${VK_VERSION}\bin"
+
+      - name: Install CUDA Toolkit (Linux)
+        if: matrix.backend == 'cuda' && runner.os == 'Linux'
+        run: |
+          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y cuda-toolkit-12-6
+
+      - name: Install CUDA Toolkit (Windows)
+        if: matrix.backend == 'cuda' && runner.os == 'Windows'
+        run: |
+          $CUDA_VERSION = "12.6.3"
+          $CUDA_BUILD = "560.94"
+          curl.exe -o cuda_installer.exe -L "https://developer.download.nvidia.com/compute/cuda/${CUDA_VERSION}/network_installers/cuda_${CUDA_VERSION}_${CUDA_BUILD}_windows_network.exe"
+          Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s nvcc_${CUDA_VERSION} cudart_${CUDA_VERSION}" -Wait
+          Add-Content $env:GITHUB_ENV "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
+          Add-Content $env:GITHUB_PATH "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin"
+
+      - name: Configure (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_DIR=ggml \
+            -DGGML_CUDA=${{ matrix.backend == 'cuda' && 'ON' || 'OFF' }} \
+            -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} \
+            -DGGML_METAL=${{ matrix.backend == 'metal' && 'ON' || 'OFF' }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DBSR_BUILD_CLI=ON
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -B build -G "Ninja Multi-Config" `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DGGML_DIR=ggml `
+            -DGGML_CUDA=${{ matrix.backend == 'cuda' && 'ON' || 'OFF' }} `
+            -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DBSR_BUILD_CLI=ON
+
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: cmake --build build --config Release -j $(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p release
+          CLI_PATH=$(find build -name "bs-roformer-cli" -type f | head -n 1)
+          if [[ -n "$CLI_PATH" ]]; then
+            cp "$CLI_PATH" release/
+            chmod +x release/bs-roformer-cli
+          fi
+          cd release && tar -czf ../BSRoformer-${{ matrix.name }}.tar.gz *
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+          $CliPath = Get-ChildItem -Path build -Filter "bs-roformer-cli.exe" -Recurse -File | Select-Object -First 1
+          if ($CliPath) {
+            Copy-Item $CliPath.FullName release\
+          }
+          Compress-Archive -Path release\* -DestinationPath "BSRoformer-${{ matrix.name }}.zip"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BSRoformer-${{ matrix.name }}
+          path: |
+            BSRoformer-${{ matrix.name }}.tar.gz
+            BSRoformer-${{ matrix.name }}.zip
+          retention-days: 90
+
+  create-release:
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --generate-notes \
+            artifacts/**/*.tar.gz \
+            artifacts/**/*.zip
