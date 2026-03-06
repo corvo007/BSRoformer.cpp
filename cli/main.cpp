@@ -1,5 +1,6 @@
 #include "bs_roformer/inference.h"
 #include "bs_roformer/audio.h"
+#include "process_utils.h"
 #include "dr_libs/dr_wav.h"
 #include <iostream>
 #include <string>
@@ -15,14 +16,6 @@
 #include <filesystem>
 #include <sstream>
 #include <iomanip>
-
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <process.h>
-#endif
 
 template<typename T>
 class ThreadSafeQueue {
@@ -66,69 +59,8 @@ static std::string MakeStemOutputPath(const std::string& output_path, int stem_i
     if (dot_pos != std::string::npos) {
         return output_path.substr(0, dot_pos) + "_stem_" + std::to_string(stem_idx) + output_path.substr(dot_pos);
     }
-    return output_path + "_stem_" + std::to_string(stem_idx);
+    return output_path + "_stem_" + std::to_string(stem_idx) + ".wav";
 }
-
-static std::filesystem::path GetSelfExecutablePath(const char* argv0) {
-#ifdef _WIN32
-    std::wstring buf;
-    buf.resize(32768);
-    DWORD len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
-    if (len > 0 && len < buf.size()) {
-        buf.resize(len);
-        return std::filesystem::path(buf);
-    }
-#endif
-    return std::filesystem::path(argv0 ? argv0 : "");
-}
-
-#ifdef _WIN32
-static std::wstring Utf8ToWide(const std::string& s) {
-    if (s.empty()) return {};
-
-    int needed = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    if (needed <= 0) {
-        needed = MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, nullptr, 0);
-        if (needed <= 0) return {};
-
-        std::wstring out(static_cast<size_t>(needed) - 1, L'\0');
-        MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, out.data(), needed);
-        return out;
-    }
-
-    std::wstring out(static_cast<size_t>(needed) - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), needed);
-    return out;
-}
-
-static int SpawnChildAndWait(const std::filesystem::path& exe_path, const std::vector<std::string>& args) {
-    std::vector<std::wstring> wargs;
-    wargs.reserve(args.size() + 2);
-    wargs.push_back(exe_path.wstring());
-    for (const auto& a : args) {
-        wargs.push_back(Utf8ToWide(a));
-    }
-
-    std::vector<const wchar_t*> argvw;
-    argvw.reserve(wargs.size() + 1);
-    for (const auto& w : wargs) {
-        argvw.push_back(w.c_str());
-    }
-    argvw.push_back(nullptr);
-
-    int rc = _wspawnv(_P_WAIT, wargs[0].c_str(), argvw.data());
-    if (rc == -1) {
-        throw std::runtime_error("Failed to spawn child process");
-    }
-    return rc;
-}
-#else
-static int SpawnChildAndWait(const std::filesystem::path& exe_path, const std::vector<std::string>& args) {
-    (void)exe_path;
-    (void)args;
-    throw std::runtime_error("Multiprocess segmentation is only supported on Windows in this build");
-}
-#endif
 
 static std::filesystem::path CreateTempDir() {
     const auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
@@ -367,7 +299,7 @@ static int RunSegmentedMultiprocess(const std::filesystem::path& exe_path,
             child_args.push_back("--no-pipeline");
         }
 
-        return SpawnChildAndWait(exe_path, child_args);
+        return cli_process::SpawnChildAndWait(exe_path, child_args);
     }
 
     std::cout << "[Info] Multiprocess segmentation enabled: " << seg_count << " segments of "
@@ -437,7 +369,7 @@ static int RunSegmentedMultiprocess(const std::filesystem::path& exe_path,
                       << " (frames " << seg_start << " .. " << nominal_end
                       << ", len=" << seg_frames << ")" << std::endl;
 
-            int rc = SpawnChildAndWait(exe_path, child_args);
+            int rc = cli_process::SpawnChildAndWait(exe_path, child_args);
             if (rc != 0) {
                 throw std::runtime_error("Child process failed for segment " + std::to_string(i) +
                                          " (exit code " + std::to_string(rc) + ")");
@@ -549,7 +481,7 @@ int main(int argc, char* argv[]) {
     std::string model_path = argv[1];
     std::string input_path = argv[2];
     std::string output_path = argv[3];
-    const auto exe_path = GetSelfExecutablePath(argv[0]);
+    const auto exe_path = cli_process::GetSelfExecutablePath(argv[0]);
     
     // Parse optional arguments
     for (int i = 4; i < argc; ++i) {

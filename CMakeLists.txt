@@ -110,25 +110,26 @@ endif()
 
 if(BSR_BUILD_CLI)
     # audio.cpp implements AudioFile utilities (using dr_wav)
-    add_executable(bs_roformer-cli 
-        cli/main.cpp 
+    add_executable(bs-roformer-cli
+        cli/main.cpp
+        cli/process_utils.cpp
         src/audio.cpp
     )
-    target_link_libraries(bs_roformer-cli PRIVATE bs_roformer)
-    target_include_directories(bs_roformer-cli PRIVATE 
-        src 
+    target_link_libraries(bs-roformer-cli PRIVATE bs_roformer)
+    target_include_directories(bs-roformer-cli PRIVATE
+        src
         third_party
     )
     
     if(MSVC)
-        target_compile_options(bs_roformer-cli PRIVATE /W3 /utf-8)
+        target_compile_options(bs-roformer-cli PRIVATE /W3 /utf-8)
     endif()
 
     if(UNIX AND NOT APPLE)
         # Allow colocated deployment on Linux:
         # - shared libs next to the executable ($ORIGIN)
         # - shared libs in a sibling lib directory ($ORIGIN/lib)
-        set_target_properties(bs_roformer-cli PROPERTIES
+        set_target_properties(bs-roformer-cli PROPERTIES
             BUILD_RPATH "\$ORIGIN;\$ORIGIN/lib"
             INSTALL_RPATH "\$ORIGIN;\$ORIGIN/lib"
         )
@@ -152,10 +153,10 @@ if(BSR_BUILD_CLI)
 
             if(BSR_CUDA_RUNTIME_DLLS)
                 foreach(dll ${BSR_CUDA_RUNTIME_DLLS})
-                    add_custom_command(TARGET bs_roformer-cli POST_BUILD
+                    add_custom_command(TARGET bs-roformer-cli POST_BUILD
                         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                                 "${dll}"
-                                "$<TARGET_FILE_DIR:bs_roformer-cli>"
+                                "$<TARGET_FILE_DIR:bs-roformer-cli>"
                         VERBATIM
                     )
                 endforeach()
