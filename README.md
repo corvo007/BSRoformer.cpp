@@ -42,6 +42,8 @@ Options:
   --segment-overlap-seconds <N> Overlap duration for segment crossfade (default: 10)
   --segment-keep-temp Keep temporary segment outputs (debug only)
   --no-segment       Disable multiprocess segmentation (debug only)
+  --pipeline-depth <N>  Streaming pipeline depth (1-8, default: 2)
+  --cuda-pinned-staging Enable CUDA pinned staging (default: off)
   --no-progress      Disable progress bar output
   --help, -h         Show help message
 ```
@@ -74,10 +76,24 @@ Options:
 
 ### Performance Tuning (Advanced)
 
-The following environment variables can help with performance/memory tuning:
+You can tune performance and memory usage via **command-line arguments** (recommended) or environment variables:
 
-- `BSR_STREAM_PIPELINE_DEPTH` (default `2`, range `1..8`): number of in-flight chunks in the streaming pipeline. Increasing this can reduce GPU idle time, but increases RAM usage.
-- `BSR_CUDA_PINNED_STAGING` (default `0`): set to `1` to use pinned host staging buffers for CUDA H2D/D2H copies. This can improve throughput, but increases host RAM usage (locked/pinned memory).
+**Command-line arguments** (override environment variables):
+- `--pipeline-depth <N>` (default `2`, range `1-8`): Number of in-flight chunks in the streaming pipeline. Higher values reduce GPU idle time but increase RAM usage.
+- `--cuda-pinned-staging`: Enable pinned host staging buffers for CUDA copies. Can improve throughput but increases locked memory usage.
+
+**Environment variables** (fallback if CLI args not set):
+- `BSR_STREAM_PIPELINE_DEPTH` (default `2`, range `1-8`): Same as `--pipeline-depth`
+- `BSR_CUDA_PINNED_STAGING` (default `0`): Set to `1` to enable, same as `--cuda-pinned-staging`
+
+**Examples:**
+```bash
+# Reduce memory usage (lower pipeline depth)
+./bs_roformer-cli model.gguf input.wav output.wav --pipeline-depth 1
+
+# Maximize throughput (enable pinned staging)
+./bs_roformer-cli model.gguf input.wav output.wav --cuda-pinned-staging
+```
 - `BSR_GGML_GRAPH_CTX_MB` (default `32`): GGML graph context size in MB. Increase if graph building fails for a specific model/chunk size.
 - `BSR_STREAM_TIMING` (default `0`): set to `1` to print per-chunk timing for `pre/inf/post` stages (useful for GPU bubble analysis).
 

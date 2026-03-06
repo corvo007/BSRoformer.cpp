@@ -12,6 +12,12 @@ class BSRoformer;
 // Forward declaration
 namespace ggml { struct context; struct cgraph; }
 
+// Global configuration (set before creating Inference, overrides env vars)
+namespace BSRConfig {
+    void SetPipelineDepth(int depth);  // 1-8, default 2
+    void SetCudaPinnedStaging(bool enable);  // default false
+}
+
 class Inference {
 public:
     using CancelCallback = std::function<bool()>;

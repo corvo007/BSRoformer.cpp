@@ -62,10 +62,24 @@ static bool WantCudaHostRegister() {
 #endif
 }
 
+// Global configuration (overrides env vars)
+namespace BSRConfig {
+    static int g_pipeline_depth = -1;  // -1 = not set
+    static int g_cuda_pinned = -1;     // -1 = not set
+
+    void SetPipelineDepth(int depth) { g_pipeline_depth = depth; }
+    void SetCudaPinnedStaging(bool enable) { g_cuda_pinned = enable ? 1 : 0; }
+}
+
 static bool WantCudaPinnedStaging() {
 #if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
     if (std::getenv("GGML_CUDA_NO_PINNED") != nullptr) {
         return false;
+    }
+
+    // CLI arg overrides env var
+    if (BSRConfig::g_cuda_pinned >= 0) {
+        return BSRConfig::g_cuda_pinned > 0;
     }
 
     const char* env = std::getenv("BSR_CUDA_PINNED_STAGING");
@@ -2277,9 +2291,15 @@ std::vector<std::vector<float>> Inference::OverlapAddStreamer::Finalize() {
 }
 
 static size_t GetStreamPipelineDepth() {
+    // CLI arg overrides env var
+    if (BSRConfig::g_pipeline_depth >= 0) {
+        int v = BSRConfig::g_pipeline_depth;
+        if (v < 1) v = 1;
+        if (v > 8) v = 8;
+        return static_cast<size_t>(v);
+    }
+
     const char* env = std::getenv("BSR_STREAM_PIPELINE_DEPTH");
-    // Default to depth=2 to overlap pre/inf/post while keeping in-flight buffers reasonably bounded.
-    // For very long audio on RAM-constrained machines, set this to 1 to minimize host-side buffering.
     if (!env || !*env) return 2;
 
     char* end = nullptr;

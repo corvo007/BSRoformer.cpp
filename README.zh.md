@@ -42,6 +42,8 @@
   --segment-overlap-seconds <N> 分段拼接 crossfade 的 overlap 秒数（默认：10）
   --segment-keep-temp 保留临时分段输出文件（仅用于调试）
   --no-segment       禁用多进程分段（仅用于调试）
+  --pipeline-depth <N>  流式推理流水线深度（1-8，默认：2）
+  --cuda-pinned-staging 启用 CUDA pinned staging（默认：关闭）
   --no-progress      禁用进度条输出
   --help, -h         显示帮助信息
 ```
@@ -74,10 +76,24 @@
 
 ### 性能调优（高级）
 
-可通过以下环境变量做性能/内存调优：
+可通过**命令行参数**（推荐）或环境变量来调优性能和内存使用：
 
-- `BSR_STREAM_PIPELINE_DEPTH`（默认 `2`，范围 `1..8`）：流式推理流水线允许的 in-flight chunk 数。适当增大可减少 GPU 空转，但会略微增加 RAM 占用。
-- `BSR_CUDA_PINNED_STAGING`（默认 `0`）：设为 `1` 使用 CUDA H2D/D2H 的 pinned host staging（可能提升吞吐，但会增加锁页内存占用）。
+**命令行参数**（优先级高于环境变量）：
+- `--pipeline-depth <N>`（默认 `2`，范围 `1-8`）：流式推理流水线允许的 in-flight chunk 数。较高值可减少 GPU 空转，但会增加 RAM 占用。
+- `--cuda-pinned-staging`：启用 CUDA pinned host staging 缓冲区。可能提升吞吐，但会增加锁页内存占用。
+
+**环境变量**（命令行参数未设置时的备选方案）：
+- `BSR_STREAM_PIPELINE_DEPTH`（默认 `2`，范围 `1-8`）：同 `--pipeline-depth`
+- `BSR_CUDA_PINNED_STAGING`（默认 `0`）：设为 `1` 启用，同 `--cuda-pinned-staging`
+
+**示例：**
+```bash
+# 降低内存占用（降低流水线深度）
+./bs_roformer-cli model.gguf input.wav output.wav --pipeline-depth 1
+
+# 最大化吞吐（启用 pinned staging）
+./bs_roformer-cli model.gguf input.wav output.wav --cuda-pinned-staging
+```
 - `BSR_GGML_GRAPH_CTX_MB`（默认 `32`）：GGML 图上下文大小（MB）。当某个模型/分块大小下建图失败时，可尝试增大该值。
 - `BSR_STREAM_TIMING`（默认 `0`）：设为 `1` 会输出每个 chunk 的 `pre/inf/post` 分阶段耗时（用于分析 GPU bubble）。
 

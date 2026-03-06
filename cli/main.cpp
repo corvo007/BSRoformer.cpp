@@ -442,6 +442,8 @@ void print_usage(const char* program_name) {
     std::cerr << "  --start-frame <N>  (Advanced) Start at PCM frame N (0-based)" << std::endl;
     std::cerr << "  --frames <N>       (Advanced) Process only N PCM frames from start-frame" << std::endl;
     std::cerr << "  --no-progress      Disable progress bar output" << std::endl;
+    std::cerr << "  --pipeline-depth <N>  Streaming pipeline depth (1-8, default: 2)" << std::endl;
+    std::cerr << "  --cuda-pinned-staging Enable CUDA pinned staging (default: off)" << std::endl;
     std::cerr << "  --help, -h         Show this help message" << std::endl;
 }
 
@@ -558,6 +560,20 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--no-progress") {
             no_progress = true;
+        } else if (arg == "--pipeline-depth" && i + 1 < argc) {
+            try {
+                int depth = std::stoi(argv[++i]);
+                if (depth < 1 || depth > 8) {
+                    std::cerr << "Error: pipeline-depth must be 1-8" << std::endl;
+                    return 1;
+                }
+                BSRConfig::SetPipelineDepth(depth);
+            } catch (...) {
+                std::cerr << "Error: invalid pipeline-depth" << std::endl;
+                return 1;
+            }
+        } else if (arg == "--cuda-pinned-staging") {
+            BSRConfig::SetCudaPinnedStaging(true);
         } else {
             std::cerr << "Unknown option: " << arg << std::endl;
             print_usage(argv[0]);
