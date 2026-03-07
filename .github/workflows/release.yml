@@ -20,8 +20,6 @@ jobs:
           - { name: macos-arm64,      os: macos-latest,     backend: metal }
           - { name: macos-x64,        os: macos-15-intel,   backend: metal }
           - { name: windows-x64-msvc, os: windows-2025,     backend: cpu }
-          - { name: linux-x64-cuda,   os: ubuntu-22.04,     backend: cuda }
-          - { name: windows-x64-cuda, os: windows-2025,     backend: cuda }
           - { name: linux-vulkan,     os: ubuntu-24.04,     backend: vulkan }
           - { name: windows-vulkan,   os: windows-2025,     backend: vulkan }
 
@@ -68,24 +66,6 @@ jobs:
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${VK_VERSION}"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${VK_VERSION}\bin"
 
-      - name: Install CUDA Toolkit (Linux)
-        if: matrix.backend == 'cuda' && runner.os == 'Linux'
-        run: |
-          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i cuda-keyring_1.1-1_all.deb
-          sudo apt-get update
-          sudo apt-get install -y cuda-toolkit-12-6
-
-      - name: Install CUDA Toolkit (Windows)
-        if: matrix.backend == 'cuda' && runner.os == 'Windows'
-        run: |
-          $CUDA_VERSION = "12.6.3"
-          $CUDA_BUILD = "560.94"
-          curl.exe -o cuda_installer.exe -L "https://developer.download.nvidia.com/compute/cuda/${CUDA_VERSION}/network_installers/cuda_${CUDA_VERSION}_${CUDA_BUILD}_windows_network.exe"
-          Start-Process -FilePath .\cuda_installer.exe -ArgumentList "-s nvcc_${CUDA_VERSION} cudart_${CUDA_VERSION}" -Wait
-          Add-Content $env:GITHUB_ENV "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
-          Add-Content $env:GITHUB_PATH "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin"
-
       - name: Configure (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -93,7 +73,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_DIR=ggml \
-            -DGGML_CUDA=${{ matrix.backend == 'cuda' && 'ON' || 'OFF' }} \
+            -DGGML_CUDA=OFF \
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} \
             -DGGML_METAL=${{ matrix.backend == 'metal' && 'ON' || 'OFF' }} \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
@@ -106,7 +86,7 @@ jobs:
           cmake -B build -G "Ninja Multi-Config" `
             -DBUILD_SHARED_LIBS=OFF `
             -DGGML_DIR=ggml `
-            -DGGML_CUDA=${{ matrix.backend == 'cuda' && 'ON' || 'OFF' }} `
+            -DGGML_CUDA=OFF `
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
