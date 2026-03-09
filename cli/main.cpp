@@ -445,6 +445,7 @@ void print_usage(const char* program_name) {
     std::cerr << "  --pipeline-depth <N>  Streaming pipeline depth (1-8, default: 2)" << std::endl;
     std::cerr << "  --cuda-pinned-staging Enable CUDA pinned staging (default: off)" << std::endl;
     std::cerr << "  --help, -h         Show this help message" << std::endl;
+    std::cerr << "  --version, -v      Show version information" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -466,11 +467,15 @@ int main(int argc, char* argv[]) {
     drwav_uint64 frames_limit = 0;
     bool frames_limit_set = false;
     
-    // Check for help flag first
+    // Check for help/version flags first
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
+            return 0;
+        }
+        if (arg == "--version" || arg == "-v") {
+            std::cout << "bs-roformer-cli " << BSR_VERSION << std::endl;
             return 0;
         }
     }
