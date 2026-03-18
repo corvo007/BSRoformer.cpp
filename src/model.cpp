@@ -418,23 +418,19 @@ ggml_tensor* BSRoformer::BuildTransformersGraph(
         ggml_tensor* qkv_out = ggml_mul_mat(ctx, t_qkv_w, x_norm);
         
         // Split QKV
-        ggml_tensor* Q_view = ggml_view_4d(ctx, qkv_out, DIM_HEAD, T, HEADS, fb, 
+        ggml_tensor* Q_view = ggml_view_4d(ctx, qkv_out, DIM_HEAD, T, HEADS, fb,
                                           qkv_out->nb[1], DIM_HEAD*sizeof(float), qkv_out->nb[2], 0);
         ggml_tensor* K_view = ggml_view_4d(ctx, qkv_out, DIM_HEAD, T, HEADS, fb,
                                           qkv_out->nb[1], DIM_HEAD*sizeof(float), qkv_out->nb[2], DIM_INNER*sizeof(float));
         ggml_tensor* V_view = ggml_view_4d(ctx, qkv_out, DIM_HEAD, T, HEADS, fb,
                                           qkv_out->nb[1], DIM_HEAD*sizeof(float), qkv_out->nb[2], 2*DIM_INNER*sizeof(float));
-        
-        ggml_tensor* Q = ggml_cont(ctx, Q_view);
-        ggml_tensor* K = ggml_cont(ctx, K_view);
+
         ggml_tensor* V = ggml_cont(ctx, V_view);
-        
-        // RoPE with CUDA-compatible reshape
-        // Original Q/K shape: [DIM_HEAD, T, HEADS, fb]
-        // After permute: [DIM_HEAD, HEADS, T, fb]
-        // For CUDA RoPE: reshape to [DIM_HEAD, HEADS, T*fb, 1] and use expanded pos
-        ggml_tensor* Q_perm = ggml_permute(ctx, Q, 0, 2, 1, 3);
-        ggml_tensor* K_perm = ggml_permute(ctx, K, 0, 2, 1, 3);
+
+        // RoPE path: view → permute → cont (fused, saves one cont per Q/K)
+        // Target layout for RoPE: [DIM_HEAD, HEADS, T, fb] contiguous
+        ggml_tensor* Q_perm = ggml_permute(ctx, Q_view, 0, 2, 1, 3);
+        ggml_tensor* K_perm = ggml_permute(ctx, K_view, 0, 2, 1, 3);
         ggml_tensor* Q_perm_cont = ggml_cont(ctx, Q_perm);
         ggml_tensor* K_perm_cont = ggml_cont(ctx, K_perm);
         
@@ -566,21 +562,18 @@ ggml_tensor* BSRoformer::BuildTransformersGraph(
         
         ggml_tensor* f_qkv_out = ggml_mul_mat(ctx, f_qkv_w, x_fnorm);
         
-        ggml_tensor* fQ_view = ggml_view_4d(ctx, f_qkv_out, DIM_HEAD, F, HEADS, tb, 
+        ggml_tensor* fQ_view = ggml_view_4d(ctx, f_qkv_out, DIM_HEAD, F, HEADS, tb,
                                            f_qkv_out->nb[1], DIM_HEAD*sizeof(float), f_qkv_out->nb[2], 0);
         ggml_tensor* fK_view = ggml_view_4d(ctx, f_qkv_out, DIM_HEAD, F, HEADS, tb,
                                            f_qkv_out->nb[1], DIM_HEAD*sizeof(float), f_qkv_out->nb[2], DIM_INNER*sizeof(float));
         ggml_tensor* fV_view = ggml_view_4d(ctx, f_qkv_out, DIM_HEAD, F, HEADS, tb,
                                            f_qkv_out->nb[1], DIM_HEAD*sizeof(float), f_qkv_out->nb[2], 2*DIM_INNER*sizeof(float));
-        
-        ggml_tensor* fQ = ggml_cont(ctx, fQ_view);
-        ggml_tensor* fK = ggml_cont(ctx, fK_view);
+
         ggml_tensor* fV = ggml_cont(ctx, fV_view);
-        
-        // RoPE with CUDA-compatible reshape for Freq Transformer
-        // fQ/fK shape after permute: [DIM_HEAD, HEADS, F, tb]
-        ggml_tensor* fQ_perm = ggml_permute(ctx, fQ, 0, 2, 1, 3);
-        ggml_tensor* fK_perm = ggml_permute(ctx, fK, 0, 2, 1, 3);
+
+        // RoPE path: view → permute → cont (fused, saves one cont per Q/K)
+        ggml_tensor* fQ_perm = ggml_permute(ctx, fQ_view, 0, 2, 1, 3);
+        ggml_tensor* fK_perm = ggml_permute(ctx, fK_view, 0, 2, 1, 3);
         ggml_tensor* fQ_perm_cont = ggml_cont(ctx, fQ_perm);
         ggml_tensor* fK_perm_cont = ggml_cont(ctx, fK_perm);
         
