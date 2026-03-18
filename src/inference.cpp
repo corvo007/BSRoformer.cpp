@@ -321,6 +321,17 @@ Inference::Inference(const std::string& model_path) {
     const int win_length = model_->GetWinLength();
     hann_window_.resize(win_length);
     stft::hann_window(hann_window_.data(), win_length);
+
+    // Eagerly build the computation graph and warm up GPU shaders for the default chunk size.
+    // n_frames is deterministic: chunk_size / hop_length + 1 (from STFT with center padding).
+    // This moves the ~2s Vulkan shader compilation from the first inference call to init time,
+    // so the progress bar starts moving immediately.
+    const int default_chunk = model_->GetDefaultChunkSize();
+    const int hop = model_->GetHopLength();
+    if (default_chunk > 0 && hop > 0) {
+        int expected_n_frames = default_chunk / hop + 1;
+        EnsureGraph(expected_n_frames);
+    }
 }
 
 int Inference::GetDefaultChunkSize() const {
@@ -525,6 +536,11 @@ bool Inference::EnsureGraph(int n_frames) {
             std::cerr << "[Inference] Failed to allocate graph VRAM" << std::endl;
             reset_graph_state();
             continue;
+        }
+
+        {
+            size_t compute_buf = ggml_gallocr_get_buffer_size(allocr_, 0);
+            std::cout << "[Inference] Compute buffer: " << (compute_buf / (1024*1024)) << " MB" << std::endl;
         }
 
 #if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
