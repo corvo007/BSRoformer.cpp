@@ -837,10 +837,9 @@ ggml_tensor* BSRoformer::BuildMaskEstimatorGraph(
         }
     }
     
-    // Ensure output
-    ggml_tensor* mask_check = ggml_dup(ctx, mask_output);
-    ggml_set_output(mask_check);
-    ggml_build_forward_expand(gf, mask_check);
-    
-    return mask_check;
+    // Mark mask_output as graph output (no redundant dup copy needed)
+    ggml_set_output(mask_output);
+    ggml_build_forward_expand(gf, mask_output);
+
+    return mask_output;
 }
