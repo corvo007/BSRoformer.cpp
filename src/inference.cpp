@@ -564,6 +564,32 @@ bool Inference::EnsureGraph(int n_frames) {
         }
 #endif
 
+        // Warmup: run a dummy compute to trigger Vulkan shader compilation / pipeline creation.
+        // This moves the ~1-2s first-use overhead out of the actual inference path.
+        {
+            ggml_backend_t backend = model_ ? model_->GetBackend() : nullptr;
+            if (backend) {
+                const char* bname = ggml_backend_name(backend);
+                bool is_cpu = (bname && std::strcmp(bname, "CPU") == 0);
+                if (!is_cpu) {
+                    std::cout << "[Inference] Warming up GPU pipeline..." << std::endl;
+                    std::vector<float> dummy_in(ggml_nelements(input_tensor_), 0.0f);
+                    ggml_backend_tensor_set(input_tensor_, dummy_in.data(), 0, ggml_nbytes(input_tensor_));
+
+                    std::vector<int32_t> dummy_pos_time(ggml_nelements(pos_time_), 0);
+                    std::vector<int32_t> dummy_pos_freq(ggml_nelements(pos_freq_), 0);
+                    for (int i = 0; i < (int)dummy_pos_time.size(); ++i) dummy_pos_time[i] = i % n_frames;
+                    for (int i = 0; i < (int)dummy_pos_freq.size(); ++i) dummy_pos_freq[i] = i % n_bands;
+                    ggml_backend_tensor_set(pos_time_, dummy_pos_time.data(), 0, ggml_nbytes(pos_time_));
+                    ggml_backend_tensor_set(pos_freq_, dummy_pos_freq.data(), 0, ggml_nbytes(pos_freq_));
+
+                    ggml_backend_graph_compute(backend, gf_);
+                    ggml_backend_synchronize(backend);
+                    std::cout << "[Inference] Warmup complete." << std::endl;
+                }
+            }
+        }
+
         cached_n_frames_ = n_frames;
         return true;
     }
@@ -769,6 +795,7 @@ std::vector<std::vector<float>> Inference::Process(const std::vector<float>& inp
 void Inference::PreProcessChunkInto(ChunkState& state, std::vector<float> chunk_audio, int64_t id) {
     state.id = id;
     state.input_audio = std::move(chunk_audio);
+    state.input_audio_size = state.input_audio.size();
     state.mask_output.clear();
     state.n_frames = 0;
 
@@ -809,6 +836,10 @@ void Inference::PreProcessChunkInto(ChunkState& state, std::vector<float> chunk_
 
     // 2. Prepare Input
     PrepareModelInput(state.stft_outputs, state.n_frames, state.stft_flattened);
+
+    // Release input_audio — no longer needed after STFT (stft_outputs holds the frequency data).
+    // This reduces per-chunk memory by ~chunk_size*2*sizeof(float) bytes.
+    { std::vector<float>().swap(state.input_audio); }
 
 #if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
     if (backend && ggml_backend_is_cuda(backend) && !state.stft_flattened.empty()) {
@@ -822,6 +853,7 @@ void Inference::PreProcessChunkInto(ChunkState& state, std::vector<float> chunk_
 }
 
 void Inference::PreProcessChunkInPlace(ChunkState& state) {
+    state.input_audio_size = state.input_audio.size();
     state.mask_output.clear();
     state.n_frames = 0;
 
@@ -862,6 +894,9 @@ void Inference::PreProcessChunkInPlace(ChunkState& state) {
 
     // 2. Prepare Input
     PrepareModelInput(state.stft_outputs, state.n_frames, state.stft_flattened);
+
+    // Release input_audio — no longer needed after STFT.
+    { std::vector<float>().swap(state.input_audio); }
 
 #if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
     if (backend && ggml_backend_is_cuda(backend) && !state.stft_flattened.empty()) {
@@ -1086,12 +1121,13 @@ void Inference::PostProcessChunk(std::shared_ptr<ChunkState> state) {
     // 7. Post-Process & ISTFT
     PostProcessAndISTFT(state->mask_output, state->stft_outputs, state->n_frames, state->final_audio);
 
-    // 8. Trim
+    // 8. Trim (use saved size since input_audio was released after STFT)
+    const size_t expected_size = state->input_audio_size;
     for (auto& stem_audio : state->final_audio) {
-        if (stem_audio.size() > state->input_audio.size()) {
-           stem_audio.resize(state->input_audio.size());
-        } else if (stem_audio.size() < state->input_audio.size()) {
-           stem_audio.resize(state->input_audio.size(), 0.0f);
+        if (stem_audio.size() > expected_size) {
+           stem_audio.resize(expected_size);
+        } else if (stem_audio.size() < expected_size) {
+           stem_audio.resize(expected_size, 0.0f);
         }
     }
 
