@@ -1121,6 +1121,11 @@ void Inference::PostProcessChunk(std::shared_ptr<ChunkState> state) {
     // 7. Post-Process & ISTFT
     PostProcessAndISTFT(state->mask_output, state->stft_outputs, state->n_frames, state->final_audio);
 
+    // Release intermediate buffers no longer needed after ISTFT
+    { std::vector<float>().swap(state->mask_output); }
+    { std::vector<std::vector<float>>().swap(state->stft_outputs); }
+    { std::vector<float>().swap(state->stft_flattened); }
+
     // 8. Trim (use saved size since input_audio was released after STFT)
     const size_t expected_size = state->input_audio_size;
     for (auto& stem_audio : state->final_audio) {
