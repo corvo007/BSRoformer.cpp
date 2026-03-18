@@ -444,6 +444,8 @@ void print_usage(const char* program_name) {
     std::cerr << "  --no-progress      Disable progress bar output" << std::endl;
     std::cerr << "  --pipeline-depth <N>  Streaming pipeline depth (1-8, default: 2)" << std::endl;
     std::cerr << "  --cuda-pinned-staging Enable CUDA pinned staging (default: off)" << std::endl;
+    std::cerr << "  --vulkan-fast        Disable Vulkan coopmat2 for ~5% speedup on small models" << std::endl;
+    std::cerr << "                       (output differs slightly, SNR ~60dB, inaudible)" << std::endl;
     std::cerr << "  --help, -h         Show this help message" << std::endl;
     std::cerr << "  --version, -v      Show version information" << std::endl;
 }
@@ -579,6 +581,14 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--cuda-pinned-staging") {
             BSRConfig::SetCudaPinnedStaging(true);
+        } else if (arg == "--vulkan-fast") {
+            // Disable coopmat2 for faster small-matrix compute on Vulkan.
+            // Must be set before Inference construction (which inits the backend).
+#ifdef _WIN32
+            _putenv_s("GGML_VK_DISABLE_COOPMAT2", "1");
+#else
+            setenv("GGML_VK_DISABLE_COOPMAT2", "1", 0);
+#endif
         } else {
             std::cerr << "Unknown option: " << arg << std::endl;
             print_usage(argv[0]);
