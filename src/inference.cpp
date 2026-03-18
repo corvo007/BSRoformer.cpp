@@ -412,7 +412,7 @@ bool Inference::EnsureGraph(int n_frames) {
     reset_graph_state();
 
     const size_t MB = 1024ull * 1024ull;
-    const size_t kDefaultCtxMb = 32;
+    const size_t kDefaultCtxMb = 16;
     const size_t kMinCtxMb = 16;
     const size_t kMaxCtxMb = 512;
 
