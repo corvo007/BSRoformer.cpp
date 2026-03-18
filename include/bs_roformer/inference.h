@@ -242,7 +242,8 @@ private:
     // Pipelined State Data
     struct ChunkState {
         int64_t id = -1;
-        std::vector<float> input_audio;       // Original chunk audio
+        size_t input_audio_size = 0;          // Original chunk audio length (preserved after release)
+        std::vector<float> input_audio;       // Original chunk audio (released after STFT)
         std::vector<float> stft_flattened;    // [Prepared Input for GPU]
         std::vector<std::vector<float>> stft_outputs; // Kept for reconstruction
         int n_frames = 0;

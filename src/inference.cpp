@@ -321,6 +321,17 @@ Inference::Inference(const std::string& model_path) {
     const int win_length = model_->GetWinLength();
     hann_window_.resize(win_length);
     stft::hann_window(hann_window_.data(), win_length);
+
+    // Eagerly build the computation graph and warm up GPU shaders for the default chunk size.
+    // n_frames is deterministic: chunk_size / hop_length + 1 (from STFT with center padding).
+    // This moves the ~2s Vulkan shader compilation from the first inference call to init time,
+    // so the progress bar starts moving immediately.
+    const int default_chunk = model_->GetDefaultChunkSize();
+    const int hop = model_->GetHopLength();
+    if (default_chunk > 0 && hop > 0) {
+        int expected_n_frames = default_chunk / hop + 1;
+        EnsureGraph(expected_n_frames);
+    }
 }
 
 int Inference::GetDefaultChunkSize() const {
@@ -412,7 +423,7 @@ bool Inference::EnsureGraph(int n_frames) {
     reset_graph_state();
 
     const size_t MB = 1024ull * 1024ull;
-    const size_t kDefaultCtxMb = 32;
+    const size_t kDefaultCtxMb = 16;
     const size_t kMinCtxMb = 16;
     const size_t kMaxCtxMb = 512;
 
@@ -527,6 +538,11 @@ bool Inference::EnsureGraph(int n_frames) {
             continue;
         }
 
+        {
+            size_t compute_buf = ggml_gallocr_get_buffer_size(allocr_, 0);
+            std::cout << "[Inference] Compute buffer: " << (compute_buf / (1024*1024)) << " MB" << std::endl;
+        }
+
 #if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
         {
             ggml_backend_t backend = model_ ? model_->GetBackend() : nullptr;
@@ -563,6 +579,32 @@ bool Inference::EnsureGraph(int n_frames) {
             }
         }
 #endif
+
+        // Warmup: run a dummy compute to trigger Vulkan shader compilation / pipeline creation.
+        // This moves the ~1-2s first-use overhead out of the actual inference path.
+        {
+            ggml_backend_t backend = model_ ? model_->GetBackend() : nullptr;
+            if (backend) {
+                const char* bname = ggml_backend_name(backend);
+                bool is_cpu = (bname && std::strcmp(bname, "CPU") == 0);
+                if (!is_cpu) {
+                    std::cout << "[Inference] Warming up GPU pipeline..." << std::endl;
+                    std::vector<float> dummy_in(ggml_nelements(input_tensor_), 0.0f);
+                    ggml_backend_tensor_set(input_tensor_, dummy_in.data(), 0, ggml_nbytes(input_tensor_));
+
+                    std::vector<int32_t> dummy_pos_time(ggml_nelements(pos_time_), 0);
+                    std::vector<int32_t> dummy_pos_freq(ggml_nelements(pos_freq_), 0);
+                    for (int i = 0; i < (int)dummy_pos_time.size(); ++i) dummy_pos_time[i] = i % n_frames;
+                    for (int i = 0; i < (int)dummy_pos_freq.size(); ++i) dummy_pos_freq[i] = i % n_bands;
+                    ggml_backend_tensor_set(pos_time_, dummy_pos_time.data(), 0, ggml_nbytes(pos_time_));
+                    ggml_backend_tensor_set(pos_freq_, dummy_pos_freq.data(), 0, ggml_nbytes(pos_freq_));
+
+                    ggml_backend_graph_compute(backend, gf_);
+                    ggml_backend_synchronize(backend);
+                    std::cout << "[Inference] Warmup complete." << std::endl;
+                }
+            }
+        }
 
         cached_n_frames_ = n_frames;
         return true;
@@ -769,6 +811,7 @@ std::vector<std::vector<float>> Inference::Process(const std::vector<float>& inp
 void Inference::PreProcessChunkInto(ChunkState& state, std::vector<float> chunk_audio, int64_t id) {
     state.id = id;
     state.input_audio = std::move(chunk_audio);
+    state.input_audio_size = state.input_audio.size();
     state.mask_output.clear();
     state.n_frames = 0;
 
@@ -809,6 +852,10 @@ void Inference::PreProcessChunkInto(ChunkState& state, std::vector<float> chunk_
 
     // 2. Prepare Input
     PrepareModelInput(state.stft_outputs, state.n_frames, state.stft_flattened);
+
+    // Release input_audio — no longer needed after STFT (stft_outputs holds the frequency data).
+    // This reduces per-chunk memory by ~chunk_size*2*sizeof(float) bytes.
+    { std::vector<float>().swap(state.input_audio); }
 
 #if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
     if (backend && ggml_backend_is_cuda(backend) && !state.stft_flattened.empty()) {
@@ -822,6 +869,7 @@ void Inference::PreProcessChunkInto(ChunkState& state, std::vector<float> chunk_
 }
 
 void Inference::PreProcessChunkInPlace(ChunkState& state) {
+    state.input_audio_size = state.input_audio.size();
     state.mask_output.clear();
     state.n_frames = 0;
 
@@ -862,6 +910,9 @@ void Inference::PreProcessChunkInPlace(ChunkState& state) {
 
     // 2. Prepare Input
     PrepareModelInput(state.stft_outputs, state.n_frames, state.stft_flattened);
+
+    // Release input_audio — no longer needed after STFT.
+    { std::vector<float>().swap(state.input_audio); }
 
 #if defined(GGML_USE_CUDA) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
     if (backend && ggml_backend_is_cuda(backend) && !state.stft_flattened.empty()) {
@@ -1086,12 +1137,18 @@ void Inference::PostProcessChunk(std::shared_ptr<ChunkState> state) {
     // 7. Post-Process & ISTFT
     PostProcessAndISTFT(state->mask_output, state->stft_outputs, state->n_frames, state->final_audio);
 
-    // 8. Trim
+    // Release intermediate buffers no longer needed after ISTFT
+    { std::vector<float>().swap(state->mask_output); }
+    { std::vector<std::vector<float>>().swap(state->stft_outputs); }
+    { std::vector<float>().swap(state->stft_flattened); }
+
+    // 8. Trim (use saved size since input_audio was released after STFT)
+    const size_t expected_size = state->input_audio_size;
     for (auto& stem_audio : state->final_audio) {
-        if (stem_audio.size() > state->input_audio.size()) {
-           stem_audio.resize(state->input_audio.size());
-        } else if (stem_audio.size() < state->input_audio.size()) {
-           stem_audio.resize(state->input_audio.size(), 0.0f);
+        if (stem_audio.size() > expected_size) {
+           stem_audio.resize(expected_size);
+        } else if (stem_audio.size() < expected_size) {
+           stem_audio.resize(expected_size, 0.0f);
         }
     }
 
@@ -1247,60 +1304,75 @@ std::vector<std::vector<float>> Inference::ProcessOverlapAddPipelined(const std:
     
     int n_input_samples = input_audio.size() / channels;
 
-    // 1. Pad Input
+    // 1. Pad Input — use on-demand padding to avoid full copy.
+    // Only materialize the small reflect-pad regions; extract_chunk reads from input_audio directly.
     bool do_pad = (n_input_samples > 2 * border) && (border > 0);
     int pad_l = do_pad ? border : 0;
     int pad_r = do_pad ? border : 0;
     int n_padded_samples = n_input_samples + pad_l + pad_r;
-    
-    std::vector<float> padded_input;
-    
+
+    // Small reflect-pad buffers (only border samples each, not the full audio)
+    std::vector<float> pad_left_buf;   // [pad_l * channels]
+    std::vector<float> pad_right_buf;  // [pad_r * channels]
+
     if (do_pad) {
-        padded_input.resize(n_padded_samples * channels);
-        // Copy center
-        for (int i = 0; i < n_input_samples; ++i) {
-            padded_input[(pad_l + i) * channels + 0] = input_audio[i * channels + 0];
-            padded_input[(pad_l + i) * channels + 1] = input_audio[i * channels + 1];
-        }
-        // Reflect Left
+        pad_left_buf.resize(pad_l * channels);
         for (int i = 0; i < pad_l; ++i) {
-            int src_idx = 1 + i; 
+            int src_idx = 1 + i;
             if (src_idx >= n_input_samples) src_idx = n_input_samples - 1;
             int dst_idx = pad_l - 1 - i;
-            padded_input[dst_idx * channels + 0] = input_audio[src_idx * channels + 0];
-            padded_input[dst_idx * channels + 1] = input_audio[src_idx * channels + 1];
+            pad_left_buf[dst_idx * channels + 0] = input_audio[src_idx * channels + 0];
+            pad_left_buf[dst_idx * channels + 1] = input_audio[src_idx * channels + 1];
         }
-        // Reflect Right
+        pad_right_buf.resize(pad_r * channels);
         for (int i = 0; i < pad_r; ++i) {
             int src_idx = n_input_samples - 2 - i;
             if (src_idx < 0) src_idx = 0;
-            int dst_idx = pad_l + n_input_samples + i;
-            padded_input[dst_idx * channels + 0] = input_audio[src_idx * channels + 0];
-            padded_input[dst_idx * channels + 1] = input_audio[src_idx * channels + 1];
+            pad_right_buf[i * channels + 0] = input_audio[src_idx * channels + 0];
+            pad_right_buf[i * channels + 1] = input_audio[src_idx * channels + 1];
         }
-    } else {
-        padded_input = input_audio;
     }
 
+    // Helper: read one sample (per-channel pair) from the virtual padded domain.
+    // Avoids materializing the full padded_input vector.
+    auto read_padded_sample = [&](int padded_idx, float& ch0, float& ch1) {
+        if (padded_idx < pad_l) {
+            // Left pad region
+            ch0 = pad_left_buf[padded_idx * channels + 0];
+            ch1 = pad_left_buf[padded_idx * channels + 1];
+        } else if (padded_idx < pad_l + n_input_samples) {
+            // Original audio region
+            int orig_idx = padded_idx - pad_l;
+            ch0 = input_audio[orig_idx * channels + 0];
+            ch1 = input_audio[orig_idx * channels + 1];
+        } else {
+            // Right pad region
+            int rpad_idx = padded_idx - pad_l - n_input_samples;
+            ch0 = pad_right_buf[rpad_idx * channels + 0];
+            ch1 = pad_right_buf[rpad_idx * channels + 1];
+        }
+    };
+
     std::vector<std::vector<float>> result; // [stems][samples]
-    std::vector<float> counter(n_padded_samples * channels, 0.0f);
+    // Counter is per-sample (not per-channel) since window weights are identical for both channels.
+    // This halves counter memory: n_padded_samples instead of n_padded_samples * channels.
+    std::vector<float> counter(n_padded_samples, 0.0f);
     std::vector<float> window_base = GetWindow(chunk_size, fade_size);
     std::mutex result_mutex; // Protects 'result' and 'counter'
     std::atomic<bool> cancel_requested{false};
     
-    // lambda to extract chunk 'i'
+    // lambda to extract chunk 'i' from virtual padded domain (no full padded_input copy)
     auto extract_chunk = [&](int i) -> std::vector<float> {
         if (i >= n_padded_samples) return {};
-        
+
         int remaining = n_padded_samples - i;
         int part_len = std::min(C, remaining);
-        
+
         std::vector<float> chunk_in(C * channels, 0.0f);
-        
-        // Copy part
+
+        // Copy part from virtual padded domain
         for (int k = 0; k < part_len; ++k) {
-            chunk_in[k * channels + 0] = padded_input[(i + k) * channels + 0];
-            chunk_in[k * channels + 1] = padded_input[(i + k) * channels + 1];
+            read_padded_sample(i + k, chunk_in[k * channels + 0], chunk_in[k * channels + 1]);
         }
         
         // Pad short chunk if needed
@@ -1350,17 +1422,15 @@ std::vector<std::vector<float>> Inference::ProcessOverlapAddPipelined(const std:
             float w = window[k];
             int res_idx = (i32 + k) * channels;
             int chk_idx = k * channels;
-            
+
             for (int s = 0; s < num_stems; ++s) {
                  if (s >= chunk_out_stems.size()) continue;
-                 // result[s] is huge, but we access linearly in this block
                  result[s][res_idx + 0] += chunk_out_stems[s][chk_idx + 0] * w;
                  result[s][res_idx + 1] += chunk_out_stems[s][chk_idx + 1] * w;
             }
-            
-            // Counter is same for all stems, just update once
-            counter[res_idx + 0] += w;
-            counter[res_idx + 1] += w;
+
+            // Counter is per-sample (same weight for both channels)
+            counter[i32 + k] += w;
         }
     };
 
@@ -1400,15 +1470,18 @@ std::vector<std::vector<float>> Inference::ProcessOverlapAddPipelined(const std:
             int current_offset = 0;
             while (current_offset < n_padded_samples && !cancel_requested.load(std::memory_order_acquire)) {
                 std::vector<float> chunk = extract_chunk(current_offset);
-                
+
                 auto state = PreProcessChunk(std::move(chunk), static_cast<int64_t>(current_offset));
-                
+
                 input_queue.Push(state);
                 if (cancel_requested.load(std::memory_order_acquire)) {
                     break;
                 }
                 current_offset += step;
             }
+            // Pad buffers no longer needed after all chunks extracted.
+            { std::vector<float>().swap(pad_left_buf); }
+            { std::vector<float>().swap(pad_right_buf); }
         } catch (...) {
             set_pipeline_exception(std::current_exception());
         }
@@ -1507,19 +1580,16 @@ std::vector<std::vector<float>> Inference::ProcessOverlapAddPipelined(const std:
 
     int num_stems = result.size();
 
-    // Normalize in-place
+    // Normalize in-place (counter is per-sample, same weight for both channels)
     for (int s = 0; s < num_stems; ++s) {
         for (int k = 0; k < n_input_samples; ++k) {
             int padded_idx = (pad_l + k) * channels;
 
-            float w0 = counter[padded_idx + 0];
-            float w1 = counter[padded_idx + 1];
+            float w = counter[pad_l + k];
+            if (w < 1e-4f) w = 1.0f;
 
-            if (w0 < 1e-4f) w0 = 1.0f;
-            if (w1 < 1e-4f) w1 = 1.0f;
-
-            result[s][padded_idx + 0] /= w0;
-            result[s][padded_idx + 1] /= w1;
+            result[s][padded_idx + 0] /= w;
+            result[s][padded_idx + 1] /= w;
         }
     }
 
