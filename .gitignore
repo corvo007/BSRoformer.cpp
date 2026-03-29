@@ -8,4 +8,18 @@ tests/data
 *log
 profile.etl.NGENPDB
 profile.etl.EmbeddedPdbs
-*.md
+
+# Benchmark and test artifacts
+benchmark_out/
+benchmark.ps1
+run_one.ps1
+__pycache__/
+
+# Model files
+model/
+
+# Local research notes
+autoresearch/
+
+# Claude Code config (project-local)
+.claude/

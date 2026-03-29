@@ -465,6 +465,7 @@ int main(int argc, char* argv[]) {
     int segment_overlap_seconds = 10;
     bool segment_keep_temp = false;
     bool no_progress = false;
+    bool is_segment_child = false; // Set when invoked as a child process for segmented processing
     drwav_uint64 start_frame = 0;
     drwav_uint64 frames_limit = 0;
     bool frames_limit_set = false;
@@ -605,6 +606,7 @@ int main(int argc, char* argv[]) {
             segment_mode = SegmentMode::Off;
         }
         if (frames_limit_set || start_frame != 0) {
+            is_segment_child = true; // Running as child process for segmented processing
             if (segment_mode == SegmentMode::On) {
                 throw std::runtime_error("Do not combine --segment-minutes with --start-frame/--frames");
             }
@@ -980,7 +982,9 @@ int main(int argc, char* argv[]) {
             drwav_uninit(&wav);
             for (int s = 0; s < stems; ++s) {
                 drwav_uninit(&writers[s]);
-                std::cout << "Saved output stem " << s << ": " << stem_paths[s] << std::endl;
+                if (!is_segment_child) {
+                    std::cout << "Saved output stem " << s << ": " << stem_paths[s] << std::endl;
+                }
             }
         }
 
@@ -1006,7 +1010,9 @@ int main(int argc, char* argv[]) {
                 output_audio_buf.sampleRate = required_sr;
                 output_audio_buf.samples = output_audio_buf.data.size();
 
-                std::cout << "Saving output stem " << i << ": " << current_output_path << std::endl;
+                if (!is_segment_child) {
+                    std::cout << "Saving output stem " << i << ": " << current_output_path << std::endl;
+                }
                 AudioFile::Save(current_output_path, output_audio_buf);
             }
         }
