@@ -224,6 +224,7 @@ jobs:
             -DGGML_CUDA=OFF \
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} \
             -DGGML_METAL=${{ matrix.backend == 'metal' && 'ON' || 'OFF' }} \
+            -DGGML_METAL_MACOSX_VERSION_MIN=${{ matrix.backend == 'metal' && '13.0' || '' }} \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
             -DBSR_BUILD_TESTS=ON \

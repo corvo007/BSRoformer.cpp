@@ -4,6 +4,13 @@ project(bs_roformer_cpp VERSION 0.1.2 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# macOS: set deployment target so that newer Metal symbols are weak-linked
+# and the binary runs on macOS 13.0+ (dyld will skip unavailable symbols
+# guarded by @available instead of aborting at load time).
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version" FORCE)
+endif()
+
 #================================================
 # Build Options
 #================================================
