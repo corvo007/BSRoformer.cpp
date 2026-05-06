@@ -1,6 +1,8 @@
 #include "bs_roformer/inference.h"
 #include "bs_roformer/audio.h"
 #include "process_utils.h"
+#include "crash_handler.h"
+#include "stacktrace.h"
 #include "dr_libs/dr_wav.h"
 #include <iostream>
 #include <string>
@@ -451,6 +453,8 @@ void print_usage(const char* program_name) {
 }
 
 int main(int argc, char* argv[]) {
+    crash_handler::install();
+
     // Default values (will be overridden by model defaults if not explicitly set)
     int chunk_size = -1;  // -1 means use model default
     int num_overlap = -1; // -1 means use model default
@@ -1020,7 +1024,12 @@ int main(int argc, char* argv[]) {
         std::cout << "Done!" << std::endl;
         
     } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
+        std::cerr << "\n[ERROR] " << e.what() << "\n";
+        std::cerr << stacktrace::capture_string(0) << "\n";
+        return 1;
+    } catch (...) {
+        std::cerr << "\n[ERROR] Unknown exception\n";
+        std::cerr << stacktrace::capture_string(0) << "\n";
         return 1;
     }
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.17)
-project(bs_roformer_cpp VERSION 0.1.3 LANGUAGES CXX)
+project(bs_roformer_cpp VERSION 0.1.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -121,6 +121,8 @@ if(BSR_BUILD_CLI)
         cli/main.cpp
         cli/process_utils.cpp
         src/audio.cpp
+        src/stacktrace.cpp
+        src/crash_handler.cpp
     )
     target_link_libraries(bs-roformer-cli PRIVATE bs_roformer)
     target_include_directories(bs-roformer-cli PRIVATE
@@ -133,6 +135,13 @@ if(BSR_BUILD_CLI)
     
     if(MSVC)
         target_compile_options(bs-roformer-cli PRIVATE /W3 /utf-8)
+        # Generate PDB even in Release for crash stack trace resolution
+        target_compile_options(bs-roformer-cli PRIVATE $<$<CONFIG:Release>:/Zi>)
+        target_link_options(bs-roformer-cli PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        # Keep debug info + export symbols for backtrace_symbols() in Release
+        target_compile_options(bs-roformer-cli PRIVATE $<$<CONFIG:Release>:-g>)
+        target_link_options(bs-roformer-cli PRIVATE $<$<CONFIG:Release>:-rdynamic>)
     endif()
 
     if(UNIX AND NOT APPLE)
