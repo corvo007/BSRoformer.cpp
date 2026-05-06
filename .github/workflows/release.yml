@@ -47,7 +47,7 @@ jobs:
 
       - name: Install Vulkan SDK (Linux)
         if: matrix.backend == 'vulkan' && runner.os == 'Linux'
-        run: sudo apt-get install -y libvulkan-dev glslc mesa-vulkan-drivers
+        run: sudo apt-get install -y libvulkan-dev glslc mesa-vulkan-drivers spirv-headers glslang-dev
 
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
