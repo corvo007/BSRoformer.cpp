@@ -135,8 +135,9 @@ if(BSR_BUILD_CLI)
     
     if(MSVC)
         target_compile_options(bs-roformer-cli PRIVATE /W3 /utf-8)
-        # Generate PDB even in Release for crash stack trace resolution
-        target_compile_options(bs-roformer-cli PRIVATE $<$<CONFIG:Release>:/Zi>)
+        # Generate PDB even in Release for crash stack trace resolution.
+        # Use /Z7 (not /Zi) to avoid shared PDB conflicts with sccache + parallel builds.
+        target_compile_options(bs-roformer-cli PRIVATE $<$<CONFIG:Release>:/Z7>)
         target_link_options(bs-roformer-cli PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
         # Keep debug info + export symbols for backtrace_symbols() in Release
